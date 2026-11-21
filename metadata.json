@@ -1,0 +1,6 @@
+{
+  "name": "BuildCore CBMS",
+  "description": "Modular Construction Business Management System with Executive Analytics, Schedule & DPR Operations, Financial Control, Offline Field Sync, and Client Portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

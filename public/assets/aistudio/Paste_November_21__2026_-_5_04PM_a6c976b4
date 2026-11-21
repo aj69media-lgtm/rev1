@@ -1,0 +1,1889 @@
+# MASTER DEVELOPMENT PROMPT
+# Construction Business Management System (CBMS)
+
+## 1. PROJECT OBJECTIVE
+
+Build a complete, production-ready **Construction Business Management System (CBMS)** for a construction company.
+
+The system must centralize and manage the company's construction projects, project schedules, daily progress reports, personnel, attendance, task assignments, procurement, budgets, expenses, equipment, inventory, quality control, documents, communications, reporting, and client-facing project updates.
+
+The application must be a genuinely functional business system, not a static prototype, dashboard mockup, or collection of disconnected pages.
+
+Every major feature must be connected to a working backend, database, authentication system, permission structure, and appropriate business workflows.
+
+The system must be designed for actual daily use by company management, project managers, engineers, supervisors, procurement personnel, finance personnel, administrative staff, field personnel, and clients.
+
+### Primary objectives
+
+1. Centralize construction project information.
+2. Monitor project progress against approved schedules.
+3. Record daily construction activities and supporting photo documentation.
+4. Manage tasks, assignments, personnel, and attendance.
+5. Monitor project budgets, expenditures, commitments, and financial performance.
+6. Manage purchase requests, procurement, equipment, and inventory.
+7. Maintain project documentation and communication records.
+8. Provide management with accurate operational and financial reports.
+9. Provide clients with a separate, attractive, secure, and informative Client Portal.
+10. Establish a foundation for future quotation, estimating, and project-conversion workflows.
+
+Prioritize reliability, maintainability, data accuracy, security, and ease of use over unnecessary technical complexity.
+
+---
+
+# 2. TECHNICAL ARCHITECTURE AND TECHNOLOGY
+
+## 2.1 Architecture
+
+Use a **modular monolithic architecture**.
+
+The application must operate as one central system with:
+
+- One central authentication system.
+- One central database.
+- One central API.
+- Shared user, project, company, and permission records.
+- Independently organized business modules.
+- Clearly defined module boundaries and dependencies.
+- A common design system and navigation framework.
+
+Do not build this as a microservices architecture.
+
+Each module must be organized so that it can be developed, maintained, upgraded, and enabled or disabled independently without breaking unrelated modules.
+
+Disabling a module must not automatically delete its existing records.
+
+Provide a module management mechanism that records:
+
+- Module name and description.
+- Module version.
+- Installation and upgrade status.
+- Dependencies.
+- Required permissions.
+- Enabled or disabled status.
+- Database migrations.
+- Compatibility requirements.
+
+Modules must use shared application services rather than creating duplicate user, project, or authentication systems.
+
+## 2.2 Preferred technology stack
+
+Use the following technology preferences:
+
+**Backend**
+- PHP 8.3-compatible application code.
+- PHP 8.4 compatibility should be tested.
+- REST API architecture.
+- Secure server-side validation.
+- Organized controllers, services, models, repositories, and middleware.
+
+**Database**
+- MySQL or MariaDB.
+- Relational database structure.
+- Proper foreign keys where supported.
+- Indexed frequently queried fields.
+- Database migrations and seed data.
+
+**Frontend**
+- React.
+- Vite or an equivalent build system.
+- Responsive desktop, tablet, and mobile interfaces.
+- Compiled static production assets.
+
+**Communication**
+- REST API.
+- Database-backed notifications.
+- Polling for notification and status updates where necessary.
+- Optional real-time functionality only when compatible with the hosting environment.
+
+The production system must not require a permanently running Node.js server. React should be compiled into static assets that can be served by Apache.
+
+## 2.3 Dependency and infrastructure restrictions
+
+The first production deployment must work on ordinary GoDaddy cPanel shared hosting.
+
+Avoid making the application dependent on:
+
+- Docker.
+- Kubernetes.
+- Redis.
+- Elasticsearch.
+- Microservices.
+- Mandatory WebSocket servers.
+- A continuously running Node.js process.
+- Dedicated queue servers.
+- Paid cloud services.
+- External authentication providers.
+- External CDNs for essential application functionality.
+
+Use locally bundled libraries, fonts, icons, and essential frontend resources.
+
+Optional integrations may be provided for SMTP/email, SMS, mapping, cloud storage, electronic signatures, and external accounting systems. These must not be required for core system operation.
+
+The application must remain portable to a future VPS, dedicated server, or self-hosted environment without rewriting its business logic.
+
+---
+
+# 3. GO DADDY CPANEL HOSTING REQUIREMENTS
+
+## 3.1 Initial deployment environment
+
+Design and test the first deployment for:
+
+- GoDaddy cPanel shared hosting.
+- Apache web server.
+- PHP 8.3-compatible application code.
+- MySQL or MariaDB.
+- PHP CLI where available.
+- cPanel Cron Jobs.
+- Apache mod_rewrite.
+- Standard PHP extensions available through the hosting account.
+
+Do not assume that all hosting plans have identical PHP versions, extensions, memory limits, upload limits, or database resources.
+
+Provide an installation and compatibility checklist to verify the actual hosting account before deployment.
+
+## 3.2 Hosting-friendly implementation
+
+The system must:
+
+- Use ordinary PHP requests for normal operations.
+- Use pagination for large datasets.
+- Optimize database queries.
+- Avoid loading entire project histories unnecessarily.
+- Compress uploaded images.
+- Generate image thumbnails where appropriate.
+- Process large operations in manageable batches.
+- Avoid long-running processes during normal page requests.
+- Use database-backed notification queues where necessary.
+- Use Cron Jobs for scheduled processing.
+- Use polling rather than requiring permanent connections.
+- Support configurable upload limits.
+- Protect against excessive simultaneous database connections.
+- Use efficient database indexes.
+
+The application must be usable even when optional email, SMS, or external services are unavailable.
+
+## 3.3 File storage
+
+Store private documents and uploaded photos outside the publicly accessible web directory whenever the hosting structure permits.
+
+If the hosting environment does not allow this arrangement, implement a protected storage directory with strict Apache access restrictions and authenticated download endpoints.
+
+Files must be accessed through permission-checked application routes.
+
+Do not expose private file paths or unrestricted public URLs.
+
+Support:
+
+- File upload.
+- File type and size validation.
+- Image compression.
+- Thumbnail generation.
+- Secure download.
+- File deletion with authorization.
+- File version tracking where appropriate.
+
+## 3.4 Scheduled operations
+
+Provide documented Cron Job scripts for:
+
+- Overdue task checks.
+- Project schedule monitoring.
+- Notification processing.
+- Daily or periodic summaries.
+- Scheduled report generation where appropriate.
+- Database maintenance tasks.
+- Cleanup of expired temporary files.
+
+All scheduled operations must also be safely executable manually by an authorized administrator when needed.
+
+## 3.5 Deployment and portability
+
+Provide a deployment package containing:
+
+- Application source code.
+- Compiled frontend assets.
+- Database schema and migrations.
+- Installation scripts.
+- Environment configuration template.
+- Storage setup instructions.
+- Cron Job instructions.
+- Apache configuration and rewrite rules.
+- Required PHP extension checklist.
+- Backup and restoration instructions.
+- Upgrade instructions.
+- Troubleshooting documentation.
+
+Do not hard-code server paths, credentials, domains, or environment-specific settings.
+
+Keep the application configuration separate from the application source code.
+
+---
+
+# 4. USER MANAGEMENT, AUTHENTICATION, AND PERMISSIONS
+
+Implement a central authentication and user management system.
+
+Support:
+
+- Secure login and logout.
+- Password hashing.
+- Password reset.
+- Session management.
+- Account activation and deactivation.
+- User profiles.
+- Optional multi-factor authentication if practical.
+- Login activity records.
+- Failed-login protection.
+- Session expiration.
+
+## 4.1 Role-based access control
+
+Create configurable roles and permissions.
+
+Suggested initial roles:
+
+- System Administrator.
+- Company Owner / Executive.
+- General Manager.
+- Project Manager.
+- Project Engineer.
+- Site Engineer.
+- Site Supervisor.
+- Procurement Officer.
+- Finance Officer.
+- HR / Administrative Officer.
+- Warehouse / Inventory Personnel.
+- Quality Control Personnel.
+- Field Personnel.
+- Client Representative.
+
+Permissions must be configurable by module and action.
+
+Examples:
+
+- View.
+- Create.
+- Edit.
+- Delete.
+- Submit.
+- Review.
+- Approve.
+- Reject.
+- Export.
+- Publish to Client Portal.
+
+Implement both role-based and project-level permissions.
+
+A user assigned to one project must not automatically gain access to unrelated projects.
+
+Use server-side authorization for every sensitive operation. Hiding a menu item in the frontend is not sufficient security.
+
+Maintain an audit trail for sensitive administrative and approval actions.
+
+---
+
+# 5. CENTRAL EXECUTIVE DASHBOARD
+
+Create an executive dashboard that provides an accurate overview of company operations.
+
+Display:
+
+### Project overview
+- Total projects.
+- Active projects.
+- Completed projects.
+- Delayed projects.
+- At-risk projects.
+- Projects awaiting approval.
+- Overall project completion.
+
+### Financial overview
+- Total contract value.
+- Total approved project budgets.
+- Actual expenditures.
+- Outstanding commitments.
+- Remaining available budget.
+- Forecast final cost.
+- Estimated profit and margin, where sufficient data exists.
+
+### Operational overview
+- Active tasks.
+- Overdue tasks.
+- Tasks awaiting review.
+- Pending purchase requests.
+- Active personnel.
+- Attendance summary.
+- Equipment utilization.
+- Inventory alerts.
+
+### Charts and reports
+
+Include:
+
+- Project completion chart.
+- Project status distribution.
+- Planned versus actual project progress.
+- Budget versus actual expenditure.
+- Monthly expenditure.
+- Expense category distribution.
+- Task status distribution.
+- Manpower allocation.
+
+Provide a project comparison table with filtering, sorting, and drill-down access.
+
+All dashboard figures and charts must be calculated from actual database records. Never use fabricated figures or decorative charts that do not reflect the underlying data.
+
+---
+
+# 6. PROJECT MANAGEMENT MODULE
+
+Each construction project must have a dedicated workspace.
+
+## 6.1 Project information
+
+Each project should contain:
+
+- Unique project reference number.
+- Project name.
+- Client or company being served.
+- Client contact information.
+- Project location and address.
+- Project description.
+- Project scope.
+- Contract amount.
+- Approved budget.
+- Project manager.
+- Assigned engineers.
+- Site supervisor.
+- Assigned personnel.
+- Start date.
+- Original expected completion date.
+- Revised expected completion date.
+- Actual completion date.
+- Project status.
+- Project documents.
+- Project notes and history.
+
+Allow authorized users to edit project information while retaining appropriate change history.
+
+## 6.2 Project workspace
+
+Organize the project workspace into sections:
+
+- Overview.
+- Schedule.
+- Daily Progress Reports.
+- Tasks.
+- Personnel.
+- Attendance.
+- Budget and Expenses.
+- Purchase Requests.
+- Procurement.
+- Equipment.
+- Inventory.
+- Quality Control.
+- Documents.
+- Communications.
+- Reports.
+- Audit History.
+
+Only show sections the user is authorized to access.
+
+## 6.3 Project schedule import
+
+A major requirement is the ability to import project schedules from Excel workbooks supplied by clients or project companies.
+
+Build an Excel schedule import workflow that:
+
+1. Accepts Excel files.
+2. Inspects available worksheets.
+3. Allows the user to select the appropriate worksheet.
+4. Identifies possible column mappings.
+5. Allows manual mapping of columns.
+6. Previews the imported data.
+7. Validates dates, activity names, durations, dependencies, and other required values.
+8. Displays errors and warnings before import.
+9. Allows correction of mapping and invalid data.
+10. Imports approved schedule information into the project.
+
+Support relevant schedule fields such as:
+
+- Phase.
+- Activity.
+- Activity description.
+- Start date.
+- End date.
+- Duration.
+- Dependencies.
+- Milestone.
+- Planned progress.
+- Actual progress.
+- Responsible person.
+- Remarks.
+
+Do not silently overwrite an existing approved schedule.
+
+Require an authorized user to confirm schedule replacement or revision.
+
+Maintain schedule revision history so that previous approved schedules can be reviewed.
+
+## 6.4 Schedule visualization
+
+Provide:
+
+- Gantt chart.
+- Project phase timeline.
+- Activity progress.
+- Milestone tracking.
+- Dependencies.
+- Planned versus actual dates.
+- Schedule revision history.
+- Delayed activity identification.
+- Upcoming milestone alerts.
+
+Where practical, calculate critical-path information based on valid activity dependencies.
+
+---
+
+# 7. DAILY PROJECT PROGRESS REPORT MODULE
+
+Create a comprehensive Daily Progress Report (DPR) system.
+
+Each report must be associated with a project and reporting date.
+
+Include:
+
+- Project name and reference.
+- Reporting date.
+- Site location.
+- Weather conditions, if applicable.
+- Reporting engineer or supervisor.
+- Activities performed.
+- Work accomplishments.
+- Percentage of work completed.
+- Manpower deployed.
+- Materials used.
+- Equipment used.
+- Delays and problems encountered.
+- Safety observations.
+- Quality observations.
+- Next day's work plan.
+- General remarks.
+- Photo documentation.
+- Supporting documents.
+
+Allow multiple photographs and attachments per report.
+
+Support draft, submitted, reviewed, approved, and returned-for-correction statuses.
+
+Maintain a record of who prepared, reviewed, and approved each report.
+
+### Important publication rule
+
+Internal DPRs must remain private by default.
+
+The Project Manager or another authorized person must explicitly select and publish client-appropriate progress summaries and photographs to the Client Portal.
+
+Never expose internal comments, confidential observations, private attachments, or unpublished reports to clients.
+
+---
+
+# 8. TASK MANAGEMENT MODULE
+
+Build a project-based task management system.
+
+Each task should include:
+
+- Task reference.
+- Project.
+- Task title.
+- Description and instructions.
+- Assigned personnel.
+- Responsible supervisor.
+- Priority.
+- Start date.
+- Deadline.
+- Dependencies.
+- Attachments.
+- Photo evidence.
+- Progress percentage.
+- Reviewer.
+- Comments.
+- Completion date.
+
+Suggested task statuses:
+
+- Pending.
+- Acknowledged.
+- In Progress.
+- For Review.
+- Completed.
+- Rejected.
+- On Hold.
+- Overdue.
+
+Provide:
+
+- List view.
+- Kanban board.
+- Calendar view.
+- Task filtering.
+- Sorting.
+- Search.
+- Task discussion.
+- Task history.
+- Assignment notifications.
+- Deadline notifications.
+
+Allow authorized personnel to assign tasks to individuals or teams.
+
+When a task is completed, it may require review and acceptance by the assigned supervisor or engineer.
+
+Task completion must not automatically mean that the overall project or phase is complete.
+
+---
+
+# 9. PROJECT SCHEDULE AND PROGRESS MONITORING
+
+Create a schedule-monitoring system that compares actual progress with the approved project schedule.
+
+Track:
+
+- Planned progress.
+- Actual progress.
+- Progress variance.
+- Planned start and completion dates.
+- Actual start and completion dates.
+- Milestone completion.
+- Delayed activities.
+- Activities at risk.
+- Remaining work.
+
+Provide clear schedule health classifications:
+
+- Ahead of Schedule.
+- On Schedule.
+- At Risk.
+- Behind Schedule.
+- Delayed.
+- Completed.
+
+Use configurable thresholds and calculate planned and actual progress using the same reporting date.
+
+Do not simply average unrelated activity percentages.
+
+Where activity weights are available, use appropriate weighted progress calculations.
+
+Where data is incomplete, clearly identify that the schedule status is provisional or cannot be reliably calculated.
+
+Preserve the original approved schedule and track subsequent revisions.
+
+---
+
+# 10. BUDGET AND PROJECT FINANCIAL MANAGEMENT
+
+Create a project financial module that provides clear financial control for each construction project.
+
+## 10.1 Project budget
+
+Track:
+
+- Original approved budget.
+- Revised approved budget.
+- Budget allocations.
+- Actual expenditures.
+- Outstanding commitments.
+- Remaining available budget.
+- Budget utilization.
+- Budget variance.
+- Forecast final cost.
+- Estimated profit or loss.
+- Estimated profit margin.
+
+## 10.2 Expense categories
+
+Provide configurable expense categories, including:
+
+- Labor.
+- Materials.
+- Equipment.
+- Transportation and logistics.
+- Subcontractors.
+- Permits and fees.
+- Administrative expenses.
+- Other project expenses.
+
+## 10.3 Expense recording
+
+Each expense must include:
+
+- Expense reference.
+- Project.
+- Date.
+- Category.
+- Description.
+- Amount.
+- Supplier or recipient.
+- Payment method.
+- Related task, if applicable.
+- Submitted by.
+- Approval status.
+- Receipt photo or supporting document.
+- Remarks.
+
+Support expense submission, review, approval, rejection, and correction.
+
+## 10.4 Financial dashboards
+
+Display:
+
+- Approved budget versus actual expenses.
+- Expense category breakdown.
+- Daily and monthly expenditure.
+- Outstanding commitments.
+- Remaining available budget.
+- Budget utilization.
+- Variance.
+- Forecast final cost.
+
+### Financial calculation rules
+
+Keep actual expenditures and outstanding commitments separate.
+
+An approved purchase request may create a financial commitment, but it must not automatically become an actual expense.
+
+When goods or services are received and an actual expense is recorded, the system must update or settle the corresponding commitment appropriately.
+
+Avoid double-counting.
+
+Do not automatically classify unused budget as profit.
+
+Clearly distinguish estimated project profit from actual financial results.
+
+Maintain financial transaction history and approval records.
+
+---
+
+# 11. PROCUREMENT AND PURCHASE REQUEST MODULE
+
+Create a dedicated Purchase Request (PR) and procurement workflow.
+
+Do not treat procurement as an ordinary task.
+
+Each purchase request should contain:
+
+- PR reference number.
+- Project.
+- Requesting department or person.
+- Related task, if applicable.
+- Request date.
+- Required date.
+- Item or service description.
+- Quantity.
+- Unit of measure.
+- Estimated unit cost.
+- Estimated total cost.
+- Suggested supplier.
+- Reason for request.
+- Supporting quotations.
+- Attachments.
+- Remarks.
+
+## 11.1 Approval workflow
+
+Support a configurable workflow such as:
+
+Requester → Project Manager → Procurement → Finance → Management.
+
+Approval requirements and thresholds must be configurable.
+
+Suggested statuses:
+
+- Draft.
+- Submitted.
+- Under Review.
+- Endorsed.
+- Approved.
+- Rejected.
+- For Procurement.
+- Ordered.
+- Partially Delivered.
+- Delivered.
+- Cancelled.
+
+Maintain an approval history showing the approver, decision, date, and remarks.
+
+## 11.2 Procurement tracking
+
+Track:
+
+- Supplier.
+- Purchase order.
+- Approved quantity.
+- Ordered quantity.
+- Delivered quantity.
+- Remaining quantity.
+- Delivery date.
+- Delivery documents.
+- Actual cost.
+- Receiving confirmation.
+
+Approved purchase requests must be capable of creating financial commitments.
+
+Actual expenditure must be recorded through the appropriate expense or receiving workflow.
+
+---
+
+# 12. PERSONNEL AND ATTENDANCE MODULE
+
+Create a central personnel directory.
+
+Personnel records should include:
+
+- Employee or worker ID.
+- Full name.
+- Contact information.
+- Position.
+- Skills or trade.
+- Employment status.
+- Project assignment.
+- Emergency contact, if authorized.
+- Relevant documents.
+- Remarks.
+
+Support assignment, transfer, and removal of personnel from projects.
+
+## 12.1 Attendance
+
+Record:
+
+- Date.
+- Project.
+- Personnel.
+- Time in.
+- Time out.
+- Attendance status.
+- Total hours.
+- Overtime.
+- Remarks.
+- Recorded by.
+
+Suggested statuses:
+
+- Present.
+- Absent.
+- Late.
+- Half Day.
+- On Leave.
+- Overtime.
+
+Allow authorized personnel to correct attendance records with an audit trail.
+
+Optional mobile GPS or location verification may be supported, but must not be mandatory for the core application.
+
+Protect employee personal information through role-based permissions.
+
+---
+
+# 13. EQUIPMENT AND INVENTORY MANAGEMENT
+
+## 13.1 Equipment management
+
+Track company-owned, rented, and project-assigned equipment.
+
+Equipment records should include:
+
+- Equipment ID.
+- Equipment name and type.
+- Brand and model.
+- Serial number.
+- Ownership type.
+- Current location.
+- Assigned project.
+- Assigned operator.
+- Condition.
+- Operating hours, if applicable.
+- Maintenance schedule.
+- Repair history.
+- Operating costs.
+- Supporting documents and photos.
+
+Support equipment assignment, transfer, return, maintenance, and repair records.
+
+## 13.2 Inventory management
+
+Create an inventory system for construction materials and supplies.
+
+Track:
+
+- Item SKU.
+- Item name.
+- Category.
+- Description.
+- Unit of measure.
+- Current quantity.
+- Minimum stock level.
+- Storage location.
+- Supplier.
+- Unit cost.
+- Project allocation.
+
+Support:
+
+- Receiving.
+- Issuing.
+- Project allocation.
+- Transfers.
+- Stock adjustments.
+- Returns.
+- Stock alerts.
+- Inventory history.
+
+Maintain a transaction history for every stock movement.
+
+Avoid double-counting purchased materials as both inventory consumption and separate project expense without an appropriate accounting treatment.
+
+---
+
+# 14. QUALITY CONTROL MODULE
+
+Create a quality management system for construction inspections and corrective actions.
+
+Support:
+
+- Inspection requests.
+- Inspection schedules.
+- Inspection checklists.
+- Work inspection records.
+- Defect identification.
+- Punch lists.
+- Corrective actions.
+- Reinspection.
+- Approval and rejection.
+- Photo evidence.
+- Remarks and attachments.
+
+Each defect must have an assigned responsible person, deadline, status, and resolution record.
+
+Allow an approved defect or corrective action to generate a task automatically.
+
+Maintain a full inspection and correction history.
+
+---
+
+# 15. PROJECT DOCUMENT MANAGEMENT
+
+Create a centralized document repository for each project.
+
+Support document categories such as:
+
+- Contracts.
+- Permits.
+- Drawings.
+- Technical specifications.
+- Bills of quantities.
+- Project schedules.
+- Purchase requests.
+- Purchase orders.
+- Quotations.
+- Receipts.
+- Inspection reports.
+- Safety documents.
+- Daily progress reports.
+- Correspondence.
+- Other project records.
+
+Provide:
+
+- Folder organization.
+- Upload and download.
+- Search.
+- File preview where supported.
+- Version tracking.
+- Document descriptions.
+- Upload date.
+- Uploaded by.
+- Access permissions.
+
+Protect confidential documents and prevent unauthorized direct access.
+
+---
+
+# 16. COMMUNICATIONS AND NOTIFICATIONS
+
+Create an internal communication system.
+
+Support:
+
+- Project message boards.
+- Announcements.
+- Task discussions.
+- Project notes.
+- Instructions.
+- Concerns and issues.
+- Comments.
+- Attachments.
+
+Create database-backed notifications for:
+
+- New task assignments.
+- Task deadline reminders.
+- Overdue tasks.
+- New daily reports.
+- Reports awaiting approval.
+- Purchase request submissions.
+- Approval requests.
+- Purchase request decisions.
+- Budget alerts.
+- Schedule delays.
+- Upcoming milestones.
+- Project updates.
+- New messages.
+
+Support in-app notifications.
+
+Provide optional email notifications through configurable SMTP settings.
+
+Use polling for notification updates where persistent connections are unavailable.
+
+The application must continue functioning if email delivery is not configured.
+
+---
+
+# 17. REPORTING AND AUDIT TRAIL
+
+Create a reporting module with filters by project, date range, category, status, and responsible person.
+
+Provide reports for:
+
+- Project status.
+- Project completion.
+- Planned versus actual progress.
+- Project schedule.
+- Daily progress.
+- Tasks.
+- Personnel assignments.
+- Attendance.
+- Budget versus actual expenses.
+- Expense categories.
+- Purchase requests.
+- Procurement.
+- Equipment.
+- Inventory.
+- Quality control.
+- Documents.
+- Audit history.
+
+Support export to PDF, Excel, and CSV where appropriate.
+
+## 17.1 Audit trail
+
+Maintain an audit log for important operations.
+
+Each audit record should include:
+
+- User.
+- Action.
+- Module.
+- Record type.
+- Record reference.
+- Previous value where appropriate.
+- New value where appropriate.
+- Timestamp.
+- Relevant remarks.
+
+Users must not be able to modify or delete audit records through ordinary application functions.
+
+Protect audit records through appropriate database permissions and application controls.
+
+---
+
+# 18. EARNED VALUE MANAGEMENT
+
+Prepare the system to calculate standard project performance indicators where sufficient schedule and financial data exists.
+
+Support:
+
+- Planned Value (PV).
+- Earned Value (EV).
+- Actual Cost (AC).
+- Schedule Variance (SV).
+- Cost Variance (CV).
+- Schedule Performance Index (SPI).
+- Cost Performance Index (CPI).
+- Estimate at Completion (EAC).
+- Estimate to Complete (ETC).
+
+Use standard, documented formulas.
+
+Clearly explain each indicator.
+
+Do not display misleading results when required data is incomplete, invalid, or unavailable.
+
+Show when a metric is provisional and identify the data needed to calculate it reliably.
+
+---
+
+# 19. CLIENT PORTAL MODULE
+
+The Client Portal is a major component of this system and must receive special attention in both functionality and visual design.
+
+It must be a separate, restricted client-facing experience.
+
+Use a dedicated route such as:
+
+`/client-portal`
+
+The Client Portal must use the same central database and project records as the internal CBMS.
+
+Do not create duplicate project records or a separate client project database.
+
+## 19.1 Client account management
+
+Allow administrators to:
+
+- Create client accounts.
+- Assign client accounts to companies.
+- Assign one or multiple projects to a client.
+- Create multiple representatives for one client company.
+- Activate or deactivate accounts.
+- Reset passwords.
+- Manage client permissions.
+
+A client must only see projects explicitly assigned to that client's account.
+
+## 19.2 Client dashboard design
+
+The Client Portal must be visually polished, professional, modern, and easy to understand.
+
+It must not look like an accounting system or an internal administrative dashboard.
+
+Use a premium construction project reporting experience.
+
+Prioritize:
+
+- Attractive project overview cards.
+- Large circular progress indicators.
+- Clear project status indicators.
+- Phase progress bars.
+- Construction timelines.
+- Milestone tracking.
+- Planned versus actual progress charts.
+- Recent approved progress updates.
+- Approved construction photo galleries.
+- Clear expected completion information.
+
+The design must be responsive and work well on mobile devices.
+
+## 19.3 Client project overview
+
+For each assigned project, show:
+
+- Project name.
+- Project reference.
+- Project location.
+- Project description.
+- Start date.
+- Expected completion date.
+- Current project status.
+- Overall completion percentage.
+- Current construction phase.
+- Current phase progress.
+- Next milestone.
+- Expected completion information.
+- Authorized project manager contact.
+
+The most important project information should be immediately visible without requiring the client to navigate through multiple pages.
+
+## 19.4 Current construction phase
+
+Make the current phase a prominent part of the Client Portal.
+
+Display:
+
+- Current phase name.
+- Phase completion percentage.
+- Phase start date.
+- Expected phase completion date.
+- Phase status.
+- Relevant approved progress photographs.
+- Approved progress summary.
+
+The client should immediately understand what stage the construction project is currently in.
+
+## 19.5 Construction timeline
+
+Create a visual timeline from project commencement through final inspection and turnover.
+
+The timeline must display:
+
+- Completed phases.
+- Current phase.
+- Upcoming phases.
+- Planned start dates.
+- Planned completion dates.
+- Actual dates where available.
+- Progress percentages.
+- Phase status.
+- Milestones.
+
+Use the approved project schedule as the source of timeline data.
+
+Do not hard-code generic construction phases.
+
+Project phases must be customizable based on the schedule imported or created for each project.
+
+Use a horizontal timeline on suitable desktop layouts and an easy-to-read vertical timeline on mobile.
+
+## 19.6 Planned versus actual progress
+
+Provide a clear visual comparison of:
+
+- Approved planned project progress.
+- Actual reported project progress.
+- Progress variance.
+- Reporting dates.
+
+The comparison must use the same reporting date for planned and actual progress.
+
+Show a clear project schedule classification:
+
+- Ahead of Schedule.
+- On Schedule.
+- At Risk.
+- Behind Schedule.
+- Delayed.
+- Completed.
+
+Use configurable thresholds and valid schedule data.
+
+If the project is delayed, show an explanation only if an authorized person has approved it for client publication.
+
+## 19.7 Upcoming and completed milestones
+
+Provide a section showing:
+
+- Completed milestones.
+- Current milestones.
+- Upcoming milestones.
+- Expected dates.
+- Actual completion dates.
+- Status.
+
+Make upcoming milestones and the next construction activities easy to identify.
+
+## 19.8 Client progress updates
+
+Allow authorized Project Managers to publish client-facing progress updates.
+
+Each published update may contain:
+
+- Reporting date.
+- Progress summary.
+- Current construction activities.
+- Completed activities.
+- Next activities.
+- Approved photographs.
+- Relevant milestone information.
+
+Internal Daily Progress Reports must remain private unless selected and approved for publication.
+
+## 19.9 Client photo gallery
+
+Provide an organized photo gallery showing approved construction progress photographs.
+
+Support:
+
+- Date grouping.
+- Captions.
+- Phase grouping.
+- Photo preview.
+- Mobile-friendly viewing.
+
+Only explicitly approved photographs may be published.
+
+Do not expose internal photos, confidential images, or unpublished attachments.
+
+## 19.10 Client project statistics
+
+For clients with multiple assigned projects, provide:
+
+- Number of active projects.
+- Number of completed projects.
+- Overall progress.
+- Project status distribution.
+- Individual project completion.
+- Project comparisons.
+
+Use real database values only.
+
+## 19.11 Client revision and change requests
+
+Provide a Client Revision / Change Request module.
+
+Allow clients to submit requests relating to:
+
+- Design changes.
+- Plans and drawings.
+- Materials.
+- Specifications.
+- Additional work.
+- Scope changes.
+- Finishes.
+- Construction concerns.
+- Other project-related requests.
+
+Each request should include:
+
+- Request reference.
+- Project.
+- Submission date.
+- Request category.
+- Description.
+- Reason.
+- Supporting photos.
+- Supporting documents.
+- Preferred implementation date.
+- Status.
+
+Suggested statuses:
+
+- Submitted.
+- Received.
+- Under Technical Review.
+- Under Cost Evaluation.
+- Awaiting Management Approval.
+- Approved.
+- Rejected.
+- Awaiting Client Confirmation.
+- In Progress.
+- Completed.
+- Cancelled.
+
+### Critical change-control rule
+
+A client revision request must never automatically change the approved project scope, contract amount, budget, or schedule.
+
+The workflow must require:
+
+1. Client submission.
+2. Internal review.
+3. Technical feasibility assessment.
+4. Cost evaluation.
+5. Schedule impact evaluation.
+6. Preparation of a change order or variation quotation where necessary.
+7. Management approval.
+8. Client acceptance where required.
+9. Authorized implementation.
+10. Completion and documentation.
+
+Maintain a complete history of every revision request and its decisions.
+
+## 19.12 Client communications
+
+Provide a limited communication facility for:
+
+- Client inquiries.
+- Project-related concerns.
+- Revision request discussions.
+- Approved project announcements.
+- Authorized project updates.
+
+Clients must not have access to internal staff discussions or confidential company communications.
+
+## 19.13 Client Portal security and confidentiality
+
+The Client Portal must use strict server-side access controls.
+
+Never expose:
+
+- Internal company dashboard.
+- Project budgets.
+- Expense records.
+- Actual internal costs.
+- Profit and margin information.
+- Supplier prices.
+- Internal quotations.
+- Purchase requests.
+- Procurement details.
+- Payroll information.
+- Employee personal information.
+- Internal attendance records.
+- Internal tasks and staff performance.
+- Private project messages.
+- Internal audit records.
+- Confidential documents.
+- Unpublished Daily Progress Reports.
+- Unapproved photographs.
+
+Use default-deny permissions.
+
+Every API request, document download, project query, and attachment access must verify the authenticated client's access to the specific project and record.
+
+Prevent insecure direct object reference (IDOR) vulnerabilities and unauthorized access through guessed or manipulated record IDs.
+
+Maintain client access and activity logs where appropriate.
+
+---
+
+# 20. QUOTATION AND ESTIMATING MODULE — FUTURE INTEGRATION
+
+The system must be architected from the beginning to support a future quotation and construction estimating module.
+
+This module will eventually be used by project engineers to prepare project quotations and estimates.
+
+The company already has an Excel workbook used for quotation preparation. That workbook will be provided separately.
+
+**Do not invent or assume the workbook's calculation formulas before inspecting it.**
+
+When the workbook is supplied:
+
+1. Inspect every worksheet.
+2. Identify input cells and formulas.
+3. Identify materials, labor, equipment, and quantity calculations.
+4. Identify units of measurement.
+5. Identify rates and pricing sources.
+6. Identify overhead, markup, contingency, taxes, and final calculations.
+7. Review formatting and print layouts.
+8. Identify dependencies between worksheets.
+9. Document the calculation logic.
+10. Compare the digital implementation against sample workbook calculations.
+
+The existing workbook must be treated as the source of truth for the initial digital implementation.
+
+## 20.1 Future quotation features
+
+Plan for:
+
+- Quotation number.
+- Client.
+- Project.
+- Project location.
+- Scope of work.
+- Validity period.
+- Prepared by.
+- Reviewed by.
+- Approval status.
+- Bill of quantities.
+- Materials.
+- Labor.
+- Equipment.
+- Subcontractors.
+- Transportation.
+- Direct costs.
+- Overhead.
+- Contingency.
+- Markup.
+- Margin.
+- Taxes.
+- Final quotation amount.
+
+Support reusable item, material, labor, and equipment databases.
+
+Maintain supplier and price history where appropriate.
+
+Provide quotation templates with company branding, terms, and conditions.
+
+Support:
+
+- PDF quotation.
+- Excel quotation.
+- Client-facing quotation.
+- Internal costing report.
+
+Internal costs, markup, and profit must not appear in client-facing documents unless explicitly authorized.
+
+## 20.2 Quotation workflow
+
+Support:
+
+- Draft.
+- For Review.
+- For Approval.
+- Rejected.
+- Approved.
+- Sent.
+- Revised.
+- Accepted.
+- Declined.
+- Expired.
+
+## 20.3 Quotation-to-project conversion
+
+An approved and accepted quotation should be convertible into a project.
+
+Carry over relevant information, including:
+
+- Client.
+- Project name.
+- Project location.
+- Scope.
+- Quoted amount.
+- Approved cost breakdown.
+- Materials.
+- Labor.
+- Relevant documents.
+
+Maintain a relationship between the original quotation and the resulting project.
+
+Do not allow an unapproved quotation to be converted without an authorized override and recorded reason.
+
+Prepare the architecture for future change orders, variation quotations, alternate proposals, and electronic approval.
+
+---
+
+# 21. USER INTERFACE AND DESIGN SYSTEM
+
+Create a professional, modern, premium-quality business application.
+
+The design must be consistent throughout the system.
+
+Use:
+
+- Clear typography.
+- Consistent spacing.
+- Professional colors.
+- Well-organized cards.
+- Intuitive navigation.
+- Clear tables.
+- Useful charts.
+- Status indicators.
+- Responsive layouts.
+- Accessible controls.
+- Appropriate loading, empty, success, and error states.
+
+Provide a desktop-first administrative interface that remains fully usable on tablets and mobile devices.
+
+Use a consistent sidebar or navigation system with module-based navigation.
+
+The Client Portal must have a separate visual identity and navigation experience while remaining part of the same application.
+
+Avoid cluttered screens and unnecessarily complicated workflows.
+
+Prioritize quick access to frequently used operations.
+
+Use real database values in all charts and dashboards.
+
+Never use decorative or fabricated information that could be mistaken for actual company records.
+
+---
+
+# 22. DATABASE DESIGN AND DATA INTEGRITY
+
+Design a normalized relational database.
+
+Establish clear relationships between:
+
+- Users.
+- Roles.
+- Permissions.
+- Clients.
+- Projects.
+- Project phases.
+- Project activities.
+- Schedule revisions.
+- Milestones.
+- Daily reports.
+- Tasks.
+- Task assignments.
+- Personnel.
+- Attendance.
+- Budgets.
+- Budget allocations.
+- Expenses.
+- Purchase requests.
+- Purchase orders.
+- Suppliers.
+- Inventory.
+- Equipment.
+- Quality inspections.
+- Documents.
+- Messages.
+- Notifications.
+- Client accounts.
+- Client revision requests.
+- Quotations.
+- Audit records.
+
+Use consistent naming conventions.
+
+Create database migrations for installation and upgrades.
+
+Use transactions for operations that affect multiple related records.
+
+Prevent accidental duplicate records where unique identifiers or business rules require uniqueness.
+
+Validate important financial and operational calculations on the server.
+
+Do not rely on frontend calculations as the authoritative source for business records.
+
+Maintain data integrity when modules are disabled, upgraded, or migrated.
+
+---
+
+# 23. SECURITY REQUIREMENTS
+
+Security must be part of the architecture, not an optional final step.
+
+Implement:
+
+- Secure password hashing.
+- Session protection.
+- CSRF protection.
+- SQL injection prevention.
+- Output escaping and XSS protection.
+- Server-side input validation.
+- File upload validation.
+- File access authorization.
+- Role-based permissions.
+- Project-level permissions.
+- API authorization.
+- Rate limiting for sensitive endpoints where practical.
+- Secure error handling.
+- Protection against IDOR.
+- Audit logging.
+- Secure environment configuration.
+- Database backup and recovery procedures.
+
+Never expose database credentials, secrets, or private configuration files through public web routes.
+
+Do not display stack traces, sensitive database information, or server paths to ordinary users.
+
+Use secure defaults and deny access unless permission is explicitly granted.
+
+---
+
+# 24. BACKUP, RESTORATION, AND MAINTENANCE
+
+Provide a documented backup and restoration process for:
+
+- Database records.
+- Uploaded project documents.
+- Progress photographs.
+- Other application files.
+- Environment configuration.
+
+Support manual backups and scheduled backups where hosting resources permit.
+
+Document how to restore the application on a new hosting account or server.
+
+Provide a system maintenance section for authorized administrators.
+
+Include:
+
+- Application version.
+- Module versions.
+- Database migration status.
+- Storage usage where available.
+- System health information.
+- Recent errors.
+- Scheduled task status.
+- Backup status where available.
+
+Do not allow ordinary users to access sensitive maintenance operations.
+
+---
+
+# 25. IMPLEMENTATION STRATEGY
+
+Do not attempt to generate the entire system as one unstructured code dump.
+
+Build the application in controlled phases while maintaining one consistent architecture and database design.
+
+## Phase 1 — Foundation
+
+Implement:
+
+- Application structure.
+- Database connection.
+- Environment configuration.
+- Authentication.
+- User management.
+- Roles and permissions.
+- Module framework.
+- Navigation.
+- Common design system.
+- Audit logging.
+- Installation process.
+
+## Phase 2 — Core Project Operations
+
+Implement:
+
+- Project management.
+- Project workspaces.
+- Excel schedule import.
+- Gantt and timeline.
+- Daily Progress Reports.
+- Task management.
+- Schedule monitoring.
+- Project document management.
+
+## Phase 3 — Financial and Resource Management
+
+Implement:
+
+- Project budgets.
+- Expense tracking.
+- Financial dashboards.
+- Purchase requests.
+- Procurement.
+- Personnel.
+- Attendance.
+- Equipment.
+- Inventory.
+
+## Phase 4 — Quality, Communications, and Reporting
+
+Implement:
+
+- Quality control.
+- Inspections.
+- Corrective actions.
+- Communications.
+- Notifications.
+- Management reports.
+- Earned Value Management.
+
+## Phase 5 — Client Portal
+
+Implement:
+
+- Client accounts.
+- Client project assignments.
+- Client dashboard.
+- Visual progress indicators.
+- Construction timeline.
+- Planned versus actual progress.
+- Milestones.
+- Approved progress updates.
+- Photo gallery.
+- Client revision requests.
+- Client communications.
+- Client security and access restrictions.
+
+The Client Portal must be treated as a major deliverable, not a basic optional page.
+
+## Phase 6 — Quotation and Estimating Preparation
+
+Prepare the module structure, database relationships, and conversion interfaces.
+
+Implement the actual quotation calculations only after the company Excel workbook has been provided and inspected.
+
+## Phase 7 — Production Readiness
+
+Complete:
+
+- Security testing.
+- Functional testing.
+- Permission testing.
+- Database integrity testing.
+- Performance testing.
+- Hosting compatibility testing.
+- Backup and restoration testing.
+- Deployment documentation.
+- User documentation.
+
+---
+
+# 26. TESTING AND ACCEPTANCE REQUIREMENTS
+
+The application is not complete simply because the pages render or the frontend looks finished.
+
+Every module must have working database-backed functionality.
+
+Test the following:
+
+### Authentication and permissions
+- Users can log in and out.
+- Password reset works.
+- Roles and permissions work.
+- Unauthorized users cannot access restricted modules.
+- Users cannot access projects outside their assignments.
+- Client accounts cannot access internal company records.
+
+### Project operations
+- Projects can be created and updated.
+- Excel schedules can be imported and validated.
+- Schedule revisions are preserved.
+- Progress calculations are correct.
+- Daily reports can be submitted and reviewed.
+- Tasks can be assigned and completed.
+
+### Financial operations
+- Budgets and allocations calculate correctly.
+- Expenses are recorded correctly.
+- Commitments are separated from actual expenses.
+- Budget utilization is accurate.
+- Financial reports reconcile with source records.
+
+### Procurement and resources
+- Purchase request approvals work.
+- Procurement records are linked to purchase requests.
+- Receiving records update quantities correctly.
+- Inventory movements are recorded.
+- Equipment assignments and returns work.
+- Attendance calculations are correct.
+
+### Client Portal
+- Clients only see assigned projects.
+- Progress information matches approved internal records.
+- Planned versus actual charts use valid data.
+- Unapproved photos and reports remain private.
+- Revision requests follow the proper approval workflow.
+- Client users cannot access internal financial or operational information.
+
+### Production deployment
+- Installation works on the target hosting environment.
+- Compiled React assets load correctly.
+- PHP API endpoints function correctly.
+- Database migrations execute successfully.
+- Protected file uploads and downloads work.
+- Cron Jobs execute successfully.
+- Backup and restoration work.
+- The system works without a continuously running Node.js process.
+
+Provide automated tests where practical and documented manual test procedures for workflows that cannot be fully automated.
+
+Create test users for each major role and test the permissions using those accounts.
+
+Do not mark a feature as complete unless its underlying workflow has been tested.
+
+---
+
+# 27. DOCUMENTATION AND HANDOVER
+
+Provide complete documentation for the delivered application.
+
+Include:
+
+1. System architecture.
+2. Module descriptions.
+3. Database structure.
+4. Installation guide.
+5. GoDaddy cPanel deployment guide.
+6. PHP and database compatibility checklist.
+7. Environment configuration guide.
+8. Cron Job setup.
+9. File storage configuration.
+10. User and role management guide.
+11. Project management guide.
+12. Daily report guide.
+13. Financial and procurement guide.
+14. Client Portal administration guide.
+15. Backup and restoration guide.
+16. Upgrade and migration guide.
+17. Troubleshooting guide.
+18. Developer documentation.
+19. Test procedures.
+20. Third-party dependency and license list.
+
+The source code, database, uploaded files, configuration templates, and documentation must remain under the company's control.
+
+Avoid unnecessary vendor lock-in.
+
+---
+
+# 28. DEVELOPMENT RULES AND NON-NEGOTIABLE REQUIREMENTS
+
+Follow these rules throughout development:
+
+1. Build a functional application, not a visual prototype.
+2. Use one modular monolithic architecture.
+3. Use a central database and authentication system.
+4. Keep module boundaries clear.
+5. Do not duplicate project, user, or client records unnecessarily.
+6. Do not hard-code business data or dashboard figures.
+7. All business calculations must be accurate and validated.
+8. All sensitive permissions must be enforced server-side.
+9. Protect client information and internal company information.
+10. Keep internal DPRs and documents private by default.
+11. Do not allow client requests to automatically modify approved contracts, budgets, or schedules.
+12. Do not double-count procurement commitments and actual expenses.
+13. Preserve schedule revisions and financial history.
+14. Use database migrations for structural changes.
+15. Make all core functions work without paid external services.
+16. Keep the first deployment compatible with ordinary GoDaddy cPanel shared hosting.
+17. Do not require a continuously running Node.js server.
+18. Avoid unnecessary dependencies and infrastructure.
+19. Maintain future portability to VPS, dedicated hosting, and self-hosted environments.
+20. Test all major workflows before marking them complete.
+21. Provide clear installation and maintenance instructions.
+22. Do not silently replace existing business records or approved data.
+23. Do not fabricate successful operations, test results, or system capabilities.
+24. If a requested feature cannot be supported by the current hosting environment, explain the limitation and provide a compatible implementation.
+25. Preserve existing functionality when introducing new modules or upgrades.
+
+---
+
+# 29. REQUIRED DEVELOPMENT DELIVERABLES
+
+The final deliverable must include:
+
+- Complete application source code.
+- Working backend.
+- Working frontend.
+- Database schema.
+- Database migrations.
+- Authentication and authorization.
+- Functional business modules.
+- Functional Client Portal.
+- Secure document and image handling.
+- Responsive user interface.
+- Installation package.
+- GoDaddy cPanel deployment instructions.
+- Cron Job scripts.
+- Backup and restoration procedures.
+- Automated and manual test documentation.
+- User and administrator manuals.
+- Developer documentation.
+- Dependency and license information.
+
+Provide a clear module completion checklist showing:
+
+- Module name.
+- Implemented features.
+- Database functionality.
+- Permissions.
+- Testing status.
+- Known limitations.
+- Completion status.
+
+Do not describe unfinished features as completed.
+
+---
+
+# 30. FINAL INSTRUCTION TO THE AI BUILDER
+
+Before writing substantial application code, first produce and review:
+
+1. The proposed system architecture.
+2. The module dependency map.
+3. The database entity relationship design.
+4. The authentication and permission model.
+5. The GoDaddy cPanel compatibility plan.
+6. The application folder structure.
+7. The implementation roadmap.
+8. The testing strategy.
+
+Identify technical conflicts, missing requirements, and hosting limitations before implementation.
+
+Then proceed with development phase by phase.
+
+Maintain a single coherent application architecture throughout the project.
+
+Do not discard previously completed modules when developing new ones.
+
+At the end of each phase, provide:
+
+- What was implemented.
+- What is functional.
+- Database changes.
+- Permissions implemented.
+- Tests performed.
+- Issues discovered.
+- Remaining work.
+- Instructions for proceeding to the next phase.
+
+**The ultimate objective is to deliver a secure, reliable, modular, production-ready Construction Business Management System that can be installed on GoDaddy cPanel shared hosting today, maintained by the company, and expanded or migrated to more powerful infrastructure in the future without rebuilding the application.**

@@ -1,0 +1,23 @@
+# BuildCore CBMS - systemd Unit File for Self-Hosted Linux VPS/Dedicated Servers
+# Install to: /etc/systemd/system/cbms.service
+
+[Unit]
+Description=BuildCore Construction Business Management System (CBMS)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/cbms
+EnvironmentFile=/opt/cbms/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/usr/bin/npx tsx server.ts
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
