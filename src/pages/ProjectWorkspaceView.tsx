@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
+  Box,
   Calendar,
   Camera,
   CheckCircle2,
@@ -16,6 +17,7 @@ import {
   ShieldAlert,
   Upload,
   UserCheck,
+  Wrench,
   X,
 } from 'lucide-react';
 import { CircularProgressRing, StatusLabel } from '../components/Charts';
@@ -34,7 +36,8 @@ type WorkspaceSection =
   | 'procurement'
   | 'quality'
   | 'documents'
-  | 'communications';
+  | 'communications'
+  | 'toolbox';
 
 export const ProjectWorkspaceView: React.FC<{
   projectId: number;
@@ -53,6 +56,28 @@ export const ProjectWorkspaceView: React.FC<{
   const [qcData, setQcData] = useState<any>({ inspections: [], defects: [] });
   const [docs, setDocs] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
+  const [toolboxData, setToolboxData] = useState<any>(null);
+  const [showEditProject, setShowEditProject] = useState(false);
+  const [editProjectForm, setEditProjectForm] = useState({
+    name: '',
+    location: '',
+    address: '',
+    description: '',
+    scope: '',
+    contractAmount: '',
+    approvedBudget: '',
+    startDate: '',
+    originalEndDate: '',
+    status: 'active',
+  });
+  const [showToolboxTxModal, setShowToolboxTxModal] = useState(false);
+  const [toolboxTxForm, setToolboxTxForm] = useState({
+    itemId: '',
+    txType: 'consume',
+    quantity: '1',
+    referenceDoc: '',
+    notes: '',
+  });
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState('');
 
@@ -177,6 +202,11 @@ export const ProjectWorkspaceView: React.FC<{
           apiRequest(`/api/projects/${projectId}/messages`).then((r) => setMessages(r.messages || [])).catch(() => {})
         );
       }
+      if (hasPerm('equipment', 'view')) {
+        calls.push(
+          apiRequest(`/api/projects/${projectId}/toolbox`).then(setToolboxData).catch(() => {})
+        );
+      }
       await Promise.all(calls);
     } finally {
       setLoading(false);
@@ -197,6 +227,7 @@ export const ProjectWorkspaceView: React.FC<{
     { id: 'quality', label: 'Quality Control', allowed: hasPerm('quality', 'view') },
     { id: 'documents', label: 'Documents', allowed: hasPerm('documents', 'view') },
     { id: 'communications', label: 'Communications', allowed: hasPerm('communications', 'view') },
+    { id: 'toolbox', label: 'Toolbox & Site Resources', allowed: hasPerm('equipment', 'view') },
   ].filter((s) => s.allowed) as any;
 
   const employeeOptions: Array<{ key: string; label: string; userId?: number | null; personnelId?: number | null }> = (() => {
@@ -387,16 +418,42 @@ export const ProjectWorkspaceView: React.FC<{
             </p>
           </div>
 
-          {hasPerm('schedules', 'create') && (
-            <button
-              type="button"
-              onClick={() => setShowImport(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-amber-700 whitespace-nowrap shrink-0"
-            >
-              <FileSpreadsheet className="h-4 w-4" />
-              Import Excel Schedule
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {hasPerm('projects', 'edit') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditProjectForm({
+                    name: p?.name || '',
+                    location: p?.location || '',
+                    address: p?.address || '',
+                    description: p?.description || '',
+                    scope: p?.scope || '',
+                    contractAmount: p?.contract_amount || '',
+                    approvedBudget: p?.approved_budget || '',
+                    startDate: p?.start_date || '',
+                    originalEndDate: p?.original_end_date || '',
+                    status: p?.status || 'active',
+                  });
+                  setShowEditProject(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap shrink-0"
+              >
+                <Wrench className="h-4 w-4" />
+                Edit Project Details
+              </button>
+            )}
+            {hasPerm('schedules', 'create') && (
+              <button
+                type="button"
+                onClick={() => setShowImport(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-amber-700 whitespace-nowrap shrink-0"
+              >
+                <FileSpreadsheet className="h-4 w-4" />
+                Import Excel Schedule
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Project Schedule Metadata Bar matching spreadsheet header */}
@@ -543,11 +600,29 @@ export const ProjectWorkspaceView: React.FC<{
 
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <div className="rounded-xl border border-slate-200/90 bg-white p-5 shadow-2xs space-y-3 text-xs">
-              <h3 className="font-display text-sm font-semibold text-slate-900">Project Scope &amp; Description</h3>
+              <h3 className="font-display text-sm font-semibold text-slate-900">Project Scope &amp; Client Details</h3>
               <p className="text-slate-700 leading-relaxed">{p?.description || 'No description provided.'}</p>
               <div className="border-t border-slate-100 pt-3">
                 <div className="font-semibold text-slate-800 mb-1">Approved Scope</div>
                 <p className="text-slate-600 leading-relaxed">{p?.scope || '—'}</p>
+              </div>
+              <div className="border-t border-slate-100 pt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div>
+                  <div className="text-[11px] text-slate-500">Client Representative</div>
+                  <div className="font-medium text-slate-900">
+                    {p?.client_representative || '—'}
+                    {p?.client_rep_title ? ` (${p.client_rep_title})` : ''}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500">Contact Information</div>
+                  <div className="text-slate-900">{p?.client_email || '—'}</div>
+                  {p?.client_phone && <div className="font-mono text-[11px] text-slate-600">{p.client_phone}</div>}
+                </div>
+                <div className="sm:col-span-2">
+                  <div className="text-[11px] text-slate-500">Client Address</div>
+                  <div className="text-slate-700">{p?.client_address || p?.address || '—'}</div>
+                </div>
               </div>
             </div>
 
@@ -1791,6 +1866,207 @@ export const ProjectWorkspaceView: React.FC<{
         </div>
       )}
 
+      {/* SECTION: TOOLBOX & SITE RESOURCES */}
+      {section === 'toolbox' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="font-display text-lg font-bold text-slate-900">Project Toolbox &amp; Site Resources</h2>
+              <p className="text-xs text-slate-500">
+                Materials, supplies, tools, and machines currently assigned to or physically located at this site.
+              </p>
+            </div>
+            {hasPerm('equipment', 'edit') && (
+              <button
+                type="button"
+                onClick={() => setShowToolboxTxModal(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-medium text-white hover:bg-slate-800"
+              >
+                <Plus className="h-4 w-4" />
+                Record Site Transaction
+              </button>
+            )}
+          </div>
+
+          {/* Toolbox Summary Cards */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500">Site Inventory Items</div>
+              <div className="font-mono text-xl font-bold text-slate-900 tabular-nums">
+                {toolboxData?.siteInventory?.length || 0}
+              </div>
+              <div className="text-[11px] text-emerald-700">Active stock assigned to site</div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500">Equipment Deployed</div>
+              <div className="font-mono text-xl font-bold text-slate-900 tabular-nums">
+                {toolboxData?.summary?.totalEquipment || 0}
+              </div>
+              <div className="text-[11px] text-slate-600">
+                {toolboxData?.summary?.operationalEquipment || 0} Operational · {toolboxData?.summary?.maintenanceEquipment || 0} Maintenance
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500">Recorded Transactions</div>
+              <div className="font-mono text-xl font-bold text-slate-900 tabular-nums">
+                {toolboxData?.transactions?.length || 0}
+              </div>
+              <div className="text-[11px] text-slate-500">Consumption &amp; movement log</div>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-1">
+              <div className="text-[11px] font-medium text-slate-500">Warehouse Deliveries</div>
+              <div className="font-mono text-xl font-bold text-slate-900 tabular-nums">
+                {toolboxData?.releases?.length || 0}
+              </div>
+              <div className="text-[11px] text-amber-700">Releases &amp; acknowledgments</div>
+            </div>
+          </div>
+
+          {/* Inventory Currently at Site */}
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden space-y-3">
+            <div className="border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Inventory Currently at Site</h3>
+              <span className="text-xs text-slate-500">Materials, consumables &amp; supplies</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2.5">Item Code / SKU</th>
+                    <th className="px-4 py-2.5">Item Name</th>
+                    <th className="px-4 py-2.5">Category</th>
+                    <th className="px-4 py-2.5">Unit</th>
+                    <th className="px-4 py-2.5 text-right">Site Quantity</th>
+                    <th className="px-4 py-2.5">Storage Location</th>
+                    <th className="px-4 py-2.5">Supplier</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(toolboxData?.siteInventory || []).map((it: any) => (
+                    <tr key={it.id} className="hover:bg-slate-50/70">
+                      <td className="px-4 py-2.5 font-mono text-amber-700">{it.sku}</td>
+                      <td className="px-4 py-2.5 font-medium text-slate-900">{it.name}</td>
+                      <td className="px-4 py-2.5">{it.category}</td>
+                      <td className="px-4 py-2.5">{it.unit}</td>
+                      <td className="px-4 py-2.5 text-right font-mono font-bold text-slate-900 tabular-nums">
+                        {it.site_qty ?? it.current_qty}
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-600">{it.storage_location}</td>
+                      <td className="px-4 py-2.5 text-slate-500">{it.supplier || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Equipment and Machines Currently at Site */}
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden space-y-3">
+            <div className="border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Equipment &amp; Machines Deployed to Site</h3>
+              <span className="text-xs text-slate-500">Heavy equipment, tools &amp; machines</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2.5">Equipment ID</th>
+                    <th className="px-4 py-2.5">Equipment / Machine</th>
+                    <th className="px-4 py-2.5">Category</th>
+                    <th className="px-4 py-2.5">Condition / Status</th>
+                    <th className="px-4 py-2.5">Operator / Custodian</th>
+                    <th className="px-4 py-2.5 text-right">Operating Hours</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(toolboxData?.siteEquipment || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                        No heavy equipment or machines currently deployed to this project site.
+                      </td>
+                    </tr>
+                  ) : (
+                    (toolboxData?.siteEquipment || []).map((eq: any) => (
+                      <tr key={eq.id} className="hover:bg-slate-50/70">
+                        <td className="px-4 py-2.5 font-mono text-amber-700">{eq.equipment_code}</td>
+                        <td className="px-4 py-2.5 font-medium text-slate-900">
+                          {eq.name}
+                          {eq.brand_model ? ` (${eq.brand_model})` : ''}
+                        </td>
+                        <td className="px-4 py-2.5">{eq.type}</td>
+                        <td className="px-4 py-2.5">
+                          <span
+                            className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${
+                              eq.condition_status === 'operational'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : eq.condition_status === 'maintenance'
+                                ? 'bg-amber-50 text-amber-700'
+                                : 'bg-red-50 text-red-700'
+                            }`}
+                          >
+                            {eq.condition_status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-700">{eq.operator_name || 'Unassigned'}</td>
+                        <td className="px-4 py-2.5 text-right font-mono tabular-nums">{eq.operating_hours} hrs</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Toolbox Activity History / Transactions */}
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden space-y-3">
+            <div className="border-b border-slate-200 px-5 py-3.5 flex items-center justify-between">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Toolbox Activity History</h3>
+              <span className="text-xs text-slate-500">Recent inventory consumption &amp; site movements</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2.5">Timestamp</th>
+                    <th className="px-4 py-2.5">Transaction Type</th>
+                    <th className="px-4 py-2.5">Item</th>
+                    <th className="px-4 py-2.5 text-right">Quantity</th>
+                    <th className="px-4 py-2.5">Reference / Notes</th>
+                    <th className="px-4 py-2.5">Performed By</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(toolboxData?.transactions || []).length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                        No inventory transactions recorded for this project yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    (toolboxData?.transactions || []).map((tx: any) => (
+                      <tr key={tx.id} className="hover:bg-slate-50/70">
+                        <td className="px-4 py-2.5 font-mono text-slate-500 whitespace-nowrap">{tx.created_at}</td>
+                        <td className="px-4 py-2.5 uppercase font-mono text-[11px] font-semibold text-slate-900">
+                          {tx.tx_type}
+                        </td>
+                        <td className="px-4 py-2.5 font-medium text-slate-900">
+                          {tx.item_name} <span className="font-mono text-slate-500">({tx.sku})</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono font-bold tabular-nums text-slate-900">
+                          {tx.quantity} {tx.unit}
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-600">{tx.notes || tx.reference_doc || '—'}</td>
+                        <td className="px-4 py-2.5 text-slate-700">{tx.performed_by_name}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Excel Schedule Import Modal */}
       {showImport && (
         <ScheduleImportModal
@@ -1902,6 +2178,248 @@ export const ProjectWorkspaceView: React.FC<{
                 Publish to Client Portal
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Project Details Modal */}
+      {showEditProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 overflow-y-auto">
+          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white shadow-2xl my-auto">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Edit Project Details</h3>
+              <button type="button" onClick={() => setShowEditProject(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                await apiRequest(`/api/projects/${projectId}`, {
+                  method: 'PATCH',
+                  body: editProjectForm,
+                });
+                setBanner('Project details updated successfully.');
+                setShowEditProject(false);
+                loadWorkspace();
+              }}
+              className="p-6 space-y-4 text-xs"
+            >
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Project Name *</label>
+                <input
+                  required
+                  value={editProjectForm.name}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, name: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Site Location *</label>
+                  <input
+                    required
+                    value={editProjectForm.location}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, location: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Status *</label>
+                  <select
+                    value={editProjectForm.status}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, status: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 capitalize"
+                  >
+                    {['active', 'on_hold', 'at_risk', 'completed', 'delayed'].map((st) => (
+                      <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Contract Amount ($)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editProjectForm.contractAmount}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, contractAmount: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Approved Budget ($)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editProjectForm.approvedBudget}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, approvedBudget: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Start Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={editProjectForm.startDate}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, startDate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Expected Completion *</label>
+                  <input
+                    type="date"
+                    required
+                    value={editProjectForm.originalEndDate}
+                    onChange={(e) => setEditProjectForm({ ...editProjectForm, originalEndDate: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Description</label>
+                <textarea
+                  rows={2}
+                  value={editProjectForm.description}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, description: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Approved Scope</label>
+                <textarea
+                  rows={2}
+                  value={editProjectForm.scope}
+                  onChange={(e) => setEditProjectForm({ ...editProjectForm, scope: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditProject(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 font-medium text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white hover:bg-slate-800"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Record Site Toolbox Transaction Modal */}
+      {showToolboxTxModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div className="w-full max-w-lg rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <h3 className="font-display text-sm font-semibold text-slate-900">Record Site Toolbox Transaction</h3>
+              <button type="button" onClick={() => setShowToolboxTxModal(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                await apiRequest(`/api/projects/${projectId}/toolbox/transactions`, {
+                  method: 'POST',
+                  body: toolboxTxForm,
+                });
+                setBanner('Site toolbox transaction recorded successfully.');
+                setShowToolboxTxModal(false);
+                loadWorkspace();
+              }}
+              className="p-6 space-y-4 text-xs"
+            >
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Select Inventory Item *</label>
+                <select
+                  required
+                  value={toolboxTxForm.itemId}
+                  onChange={(e) => setToolboxTxForm({ ...toolboxTxForm, itemId: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                >
+                  <option value="">Select item...</option>
+                  {(toolboxData?.siteInventory || []).map((it: any) => (
+                    <option key={it.id} value={it.id}>
+                      {it.name} ({it.sku}) — Available: {it.site_qty ?? it.current_qty} {it.unit}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Transaction Type *</label>
+                  <select
+                    value={toolboxTxForm.txType}
+                    onChange={(e) => setToolboxTxForm({ ...toolboxTxForm, txType: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                  >
+                    <option value="consume">Issue / Consume Materials</option>
+                    <option value="return">Return Unused to Warehouse</option>
+                    <option value="transfer">Inter-Project Transfer</option>
+                    <option value="damage">Report Damage / Loss</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">Quantity *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    required
+                    value={toolboxTxForm.quantity}
+                    onChange={(e) => setToolboxTxForm({ ...toolboxTxForm, quantity: e.target.value })}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Reference Document / Slip #</label>
+                <input
+                  placeholder="e.g., ISS-2026-089"
+                  value={toolboxTxForm.referenceDoc}
+                  onChange={(e) => setToolboxTxForm({ ...toolboxTxForm, referenceDoc: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Remarks / Justification</label>
+                <textarea
+                  rows={2}
+                  placeholder="Notes on consumption, return condition, or damage report"
+                  value={toolboxTxForm.notes}
+                  onChange={(e) => setToolboxTxForm({ ...toolboxTxForm, notes: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowToolboxTxModal(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 font-medium text-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white hover:bg-slate-800"
+                >
+                  Record Transaction
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

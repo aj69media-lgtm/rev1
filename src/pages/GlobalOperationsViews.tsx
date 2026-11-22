@@ -1,13 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import {
   AlertTriangle,
+  Building2,
   CheckCircle2,
   Database,
   Download,
   Lock,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
+  Search,
   Shield,
   Users,
   Wrench,
@@ -666,8 +669,10 @@ export const RevisionsAndQuotesView: React.FC<{ mode: 'revisions' | 'quotations'
 };
 
 // --- System Admin, RBAC, Modules & Maintenance ---
-export const AdminConsoleView: React.FC = () => {
-  const [tab, setTab] = useState<'users' | 'roles' | 'modules' | 'audit' | 'maintenance'>('users');
+type AdminTabKey = 'users' | 'clients' | 'roles' | 'modules' | 'audit' | 'maintenance';
+
+export const AdminConsoleView: React.FC<{ initialTab?: AdminTabKey }> = ({ initialTab = 'users' }) => {
+  const [tab, setTab] = useState<AdminTabKey>(initialTab);
   const [users, setUsers] = useState<any[]>([]);
   const [roles, setRoles] = useState<any[]>([]);
   const [modules, setModules] = useState<any[]>([]);
@@ -676,6 +681,21 @@ export const AdminConsoleView: React.FC = () => {
   const [projects, setProjects] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [banner, setBanner] = useState('');
+  const [errorBanner, setErrorBanner] = useState('');
+  const [clientSearch, setClientSearch] = useState('');
+  const [editingClientId, setEditingClientId] = useState<number | null>(null);
+
+  const emptyClientForm = {
+    companyName: '',
+    primaryContact: '',
+    representativeTitle: '',
+    email: '',
+    phone: '',
+    secondaryContact: '',
+    address: '',
+    notes: '',
+  };
+  const [clientForm, setClientForm] = useState(emptyClientForm);
 
   const [newUser, setNewUser] = useState({
     email: '',
@@ -685,6 +705,10 @@ export const AdminConsoleView: React.FC = () => {
     assignedProjectIds: [] as number[],
     clientId: '',
   });
+
+  useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
 
   const loadAll = async () => {
     const [u, r, m, a, mt, p, c] = await Promise.all([
@@ -712,16 +736,53 @@ export const AdminConsoleView: React.FC = () => {
     loadAll();
   }, []);
 
+  const filteredClients = clients.filter((c) => {
+    const q = clientSearch.trim().toLowerCase();
+    if (!q) return true;
+    return [c.company_name, c.primary_contact, c.representative_title, c.email, c.phone, c.address]
+      .filter(Boolean)
+      .some((v) => String(v).toLowerCase().includes(q));
+  });
+
+  const handleSaveClient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBanner('');
+    setErrorBanner('');
+    try {
+      if (editingClientId) {
+        await apiRequest(`/api/admin/clients/${editingClientId}`, {
+          method: 'PATCH',
+          body: clientForm,
+        });
+        setBanner(`Client profile updated: ${clientForm.companyName}`);
+      } else {
+        await apiRequest('/api/admin/clients', {
+          method: 'POST',
+          body: clientForm,
+        });
+        setBanner(`Client added to directory: ${clientForm.companyName}`);
+      }
+      setEditingClientId(null);
+      setClientForm(emptyClientForm);
+      await loadAll();
+    } catch (err: any) {
+      setErrorBanner(err?.message || 'Failed to save client record');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-bold text-slate-900">System Administration & Maintenance</h1>
-          <p className="text-xs text-slate-500">Manage users, 14-role RBAC permissions, modular toggles, audit trail, cron jobs, and backups.</p>
+          <h1 className="font-display text-2xl font-bold text-slate-900">System Administration &amp; Maintenance</h1>
+          <p className="text-xs text-slate-500">
+            Manage users, client directory &amp; representatives, 14-role RBAC permissions, modules, audit trail, and backups.
+          </p>
         </div>
         <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1 text-xs">
           {[
-            ['users', 'Users & Clients'],
+            ['users', 'Users'],
+            ['clients', 'Clients & Reps'],
             ['roles', 'Roles & RBAC'],
             ['modules', 'Modules'],
             ['audit', 'Audit Trail'],
@@ -730,7 +791,7 @@ export const AdminConsoleView: React.FC = () => {
             <button
               key={k}
               type="button"
-              onClick={() => setTab(k as any)}
+              onClick={() => setTab(k as AdminTabKey)}
               className={`rounded-md px-3 py-1.5 font-medium ${tab === k ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'}`}
             >
               {label}
@@ -740,6 +801,7 @@ export const AdminConsoleView: React.FC = () => {
       </div>
 
       {banner && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-800">{banner}</div>}
+      {errorBanner && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-xs text-red-800">{errorBanner}</div>}
 
       {tab === 'users' && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -843,6 +905,223 @@ export const AdminConsoleView: React.FC = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {tab === 'clients' && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <form
+            onSubmit={handleSaveClient}
+            className="rounded-xl border border-slate-200 bg-white p-5 space-y-3 text-xs h-fit"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                <Building2 className="h-4 w-4 text-amber-600" />
+                {editingClientId ? 'Edit Client Information' : 'Add Client Information'}
+              </h3>
+              {editingClientId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingClientId(null);
+                    setClientForm(emptyClientForm);
+                  }}
+                  className="text-[11px] font-medium text-slate-500 hover:text-slate-800"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Company / Client Name *</label>
+              <input
+                required
+                placeholder="e.g., Meridian Commercial Holdings"
+                value={clientForm.companyName}
+                onChange={(e) => setClientForm({ ...clientForm, companyName: e.target.value })}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Client Representative *</label>
+                <input
+                  required
+                  placeholder="Full name"
+                  value={clientForm.primaryContact}
+                  onChange={(e) => setClientForm({ ...clientForm, primaryContact: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Representative Title</label>
+                <input
+                  placeholder="e.g., VP Capital Projects"
+                  value={clientForm.representativeTitle}
+                  onChange={(e) => setClientForm({ ...clientForm, representativeTitle: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Email Address *</label>
+                <input
+                  type="email"
+                  required
+                  placeholder="rep@clientcompany.com"
+                  value={clientForm.email}
+                  onChange={(e) => setClientForm({ ...clientForm, email: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-medium text-slate-700 mb-1">Contact Phone *</label>
+                <input
+                  required
+                  placeholder="+1 (555) 010-2000"
+                  value={clientForm.phone}
+                  onChange={(e) => setClientForm({ ...clientForm, phone: e.target.value })}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Secondary / Billing Contact</label>
+              <input
+                placeholder="Alternate contact person, phone, or billing email"
+                value={clientForm.secondaryContact}
+                onChange={(e) => setClientForm({ ...clientForm, secondaryContact: e.target.value })}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </div>
+
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Client Office / Billing Address *</label>
+              <textarea
+                rows={2}
+                required
+                placeholder="Street, suite, city, state/province, postal code"
+                value={clientForm.address}
+                onChange={(e) => setClientForm({ ...clientForm, address: e.target.value })}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </div>
+
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Account Notes</label>
+              <textarea
+                rows={2}
+                placeholder="Contract terms, billing preferences, or site coordination notes"
+                value={clientForm.notes}
+                onChange={(e) => setClientForm({ ...clientForm, notes: e.target.value })}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2"
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="w-full rounded-lg bg-slate-900 py-2 font-semibold text-white hover:bg-slate-800"
+            >
+              {editingClientId ? 'Update Client Record' : 'Save Client'}
+            </button>
+          </form>
+
+          <div className="lg:col-span-2 rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div className="text-xs font-semibold text-slate-900">
+                Client Directory <span className="font-mono text-slate-500">({filteredClients.length})</span>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  value={clientSearch}
+                  onChange={(e) => setClientSearch(e.target.value)}
+                  placeholder="Search client, rep, address..."
+                  className="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs"
+                />
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2.5">Company &amp; Address</th>
+                    <th className="px-4 py-2.5">Client Representative</th>
+                    <th className="px-4 py-2.5">Contact Information</th>
+                    <th className="px-4 py-2.5 text-right">Projects</th>
+                    <th className="px-4 py-2.5 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredClients.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-6 text-center text-slate-500">
+                        No client records match your search.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredClients.map((c) => (
+                      <tr key={c.id} className="align-top hover:bg-slate-50/70">
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-slate-900">{c.company_name}</div>
+                          <div className="text-[11px] text-slate-600 mt-0.5">{c.address || 'No address specified'}</div>
+                          {c.notes && <div className="text-[11px] text-slate-400 mt-0.5 italic">{c.notes}</div>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-slate-900">{c.primary_contact}</div>
+                          {c.representative_title && (
+                            <div className="text-[11px] text-slate-500">{c.representative_title}</div>
+                          )}
+                          {Array.isArray(c.portal_users) && c.portal_users.length > 0 && (
+                            <div className="mt-1 text-[11px] text-emerald-700">
+                              Portal: {c.portal_users.map((pu: any) => pu.full_name).join(', ')}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="text-slate-900">{c.email}</div>
+                          <div className="font-mono text-[11px] text-slate-600 mt-0.5">{c.phone || '—'}</div>
+                          {c.secondary_contact && (
+                            <div className="text-[11px] text-slate-500 mt-0.5">Alt: {c.secondary_contact}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-slate-900">
+                          {c.project_count ?? 0}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingClientId(c.id);
+                              setClientForm({
+                                companyName: c.company_name || '',
+                                primaryContact: c.primary_contact || '',
+                                representativeTitle: c.representative_title || '',
+                                email: c.email || '',
+                                phone: c.phone || '',
+                                secondaryContact: c.secondary_contact || '',
+                                address: c.address || '',
+                                notes: c.notes || '',
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 rounded border border-slate-300 px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                          >
+                            <Pencil className="h-3 w-3" />
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}

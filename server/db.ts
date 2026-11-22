@@ -761,6 +761,312 @@ const MIGRATIONS: Array<{ version: string; name: string; sql: string }> = [
       ALTER TABLE expenses ADD COLUMN custodian_name TEXT DEFAULT '';
     `,
   },
+  {
+    version: '005',
+    name: 'client_representative_details',
+    sql: `
+      ALTER TABLE clients ADD COLUMN representative_title TEXT DEFAULT '';
+      ALTER TABLE clients ADD COLUMN secondary_contact TEXT DEFAULT '';
+      ALTER TABLE clients ADD COLUMN notes TEXT DEFAULT '';
+    `,
+  },
+  {
+    version: '006',
+    name: 'warehouse_toolbox_enhancements',
+    sql: `
+      ALTER TABLE inventory_items ADD COLUMN reserved_qty REAL NOT NULL DEFAULT 0;
+      ALTER TABLE inventory_items ADD COLUMN issued_qty REAL NOT NULL DEFAULT 0;
+
+      ALTER TABLE equipment ADD COLUMN asset_number TEXT DEFAULT '';
+      ALTER TABLE equipment ADD COLUMN acquisition_date TEXT DEFAULT NULL;
+      ALTER TABLE equipment ADD COLUMN deployment_date TEXT DEFAULT NULL;
+      ALTER TABLE equipment ADD COLUMN expected_return_date TEXT DEFAULT NULL;
+
+      CREATE TABLE IF NOT EXISTS warehouse_releases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ref_number TEXT NOT NULL UNIQUE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        request_date TEXT NOT NULL,
+        release_date TEXT DEFAULT NULL,
+        status TEXT NOT NULL DEFAULT 'requested',
+        warehouse_location TEXT DEFAULT 'Central Warehouse',
+        released_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        received_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        remarks TEXT DEFAULT '',
+        documents_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS warehouse_release_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        release_id INTEGER NOT NULL REFERENCES warehouse_releases(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+        requested_qty REAL NOT NULL DEFAULT 0,
+        approved_qty REAL NOT NULL DEFAULT 0,
+        released_qty REAL NOT NULL DEFAULT 0,
+        received_qty REAL NOT NULL DEFAULT 0,
+        consumed_qty REAL NOT NULL DEFAULT 0,
+        returned_qty REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending'
+      );
+    `,
+  },
+  {
+    version: '007',
+    name: 'rev1_quotation_estimating',
+    sql: `
+      ALTER TABLE quotations ADD COLUMN current_revision_id INTEGER DEFAULT NULL;
+      ALTER TABLE quotations ADD COLUMN current_revision_code TEXT NOT NULL DEFAULT 'REV00';
+      ALTER TABLE quotations ADD COLUMN subject TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN site_location TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN province TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN municipality TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN barangay TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN zip_code TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN attention_to TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN attention_title TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN thru_person TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN thru_title TEXT DEFAULT '';
+      ALTER TABLE quotations ADD COLUMN currency TEXT NOT NULL DEFAULT 'PHP';
+      ALTER TABLE quotations ADD COLUMN vat_rate REAL NOT NULL DEFAULT 12;
+      ALTER TABLE quotations ADD COLUMN discount_pct REAL NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN estimated_manpower INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN estimated_duration_days INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN subtotal_pre_vat REAL NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN vat_amount REAL NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN final_amount REAL NOT NULL DEFAULT 0;
+      ALTER TABLE quotations ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE quotations ADD COLUMN sent_at TEXT DEFAULT NULL;
+      ALTER TABLE quotations ADD COLUMN accepted_at TEXT DEFAULT NULL;
+      ALTER TABLE quotations ADD COLUMN converted_at TEXT DEFAULT NULL;
+      ALTER TABLE quotations ADD COLUMN converted_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+      CREATE TABLE IF NOT EXISTS quotation_revisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quotation_id INTEGER NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+        revision_code TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        subject TEXT DEFAULT '',
+        site_location TEXT DEFAULT '',
+        province TEXT DEFAULT '',
+        municipality TEXT DEFAULT '',
+        barangay TEXT DEFAULT '',
+        zip_code TEXT DEFAULT '',
+        attention_to TEXT DEFAULT '',
+        attention_title TEXT DEFAULT '',
+        thru_person TEXT DEFAULT '',
+        thru_title TEXT DEFAULT '',
+        estimated_manpower INTEGER NOT NULL DEFAULT 0,
+        estimated_duration_days INTEGER NOT NULL DEFAULT 0,
+        vat_rate REAL NOT NULL DEFAULT 12,
+        discount_pct REAL NOT NULL DEFAULT 0,
+        scope_options_json TEXT NOT NULL DEFAULT '{}',
+        terms_json TEXT NOT NULL DEFAULT '{}',
+        notes_json TEXT NOT NULL DEFAULT '[]',
+        subtotal_mat_cost REAL NOT NULL DEFAULT 0,
+        subtotal_lbr_cost REAL NOT NULL DEFAULT 0,
+        total_direct_cost REAL NOT NULL DEFAULT 0,
+        subtotal_mat_sell REAL NOT NULL DEFAULT 0,
+        subtotal_lbr_sell REAL NOT NULL DEFAULT 0,
+        total_selling_pre_vat REAL NOT NULL DEFAULT 0,
+        vat_amount REAL NOT NULL DEFAULT 0,
+        total_selling_vat_inc REAL NOT NULL DEFAULT 0,
+        discount_amount REAL NOT NULL DEFAULT 0,
+        final_amount REAL NOT NULL DEFAULT 0,
+        gross_profit_amount REAL NOT NULL DEFAULT 0,
+        gross_profit_pct REAL NOT NULL DEFAULT 0,
+        snapshot_json TEXT NOT NULL DEFAULT '{}',
+        revision_reason TEXT DEFAULT '',
+        prepared_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        prepared_by_title TEXT DEFAULT '',
+        reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        approved_by_title TEXT DEFAULT '',
+        is_locked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(quotation_id, revision_code)
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_sections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        revision_id INTEGER NOT NULL REFERENCES quotation_revisions(id) ON DELETE CASCADE,
+        code TEXT NOT NULL,
+        title TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_collapsed INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        revision_id INTEGER NOT NULL REFERENCES quotation_revisions(id) ON DELETE CASCADE,
+        section_id INTEGER NOT NULL REFERENCES quotation_sections(id) ON DELETE CASCADE,
+        parent_item_id INTEGER DEFAULT NULL,
+        row_type TEXT NOT NULL DEFAULT 'item',
+        line_no TEXT DEFAULT '',
+        item_code TEXT DEFAULT '',
+        description TEXT NOT NULL,
+        specification TEXT DEFAULT '',
+        qty REAL NOT NULL DEFAULT 1,
+        unit TEXT DEFAULT 'lot',
+        mat_pricing_mode TEXT NOT NULL DEFAULT 'computed',
+        lbr_pricing_mode TEXT NOT NULL DEFAULT 'computed',
+        visibility_mode TEXT NOT NULL DEFAULT 'visible',
+        rollup_children INTEGER NOT NULL DEFAULT 0,
+        mat_unit_cost REAL NOT NULL DEFAULT 0,
+        lbr_unit_cost REAL NOT NULL DEFAULT 0,
+        mat_gp_pct REAL NOT NULL DEFAULT 0.3,
+        lbr_gp_pct REAL NOT NULL DEFAULT 0.3,
+        mat_sell_rate REAL NOT NULL DEFAULT 0,
+        lbr_sell_rate REAL NOT NULL DEFAULT 0,
+        combined_unit_rate REAL NOT NULL DEFAULT 0,
+        extended_mat_sell REAL NOT NULL DEFAULT 0,
+        extended_lbr_sell REAL NOT NULL DEFAULT 0,
+        extended_selling REAL NOT NULL DEFAULT 0,
+        extended_mat_cost REAL NOT NULL DEFAULT 0,
+        extended_lbr_cost REAL NOT NULL DEFAULT 0,
+        extended_cost REAL NOT NULL DEFAULT 0,
+        gross_profit REAL NOT NULL DEFAULT 0,
+        override_mat_rate REAL DEFAULT NULL,
+        override_lbr_rate REAL DEFAULT NULL,
+        override_reason TEXT DEFAULT '',
+        overridden_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        overridden_at TEXT DEFAULT NULL,
+        catalog_item_id INTEGER DEFAULT NULL,
+        supplier_ref TEXT DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_approvals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quotation_id INTEGER NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+        revision_id INTEGER NOT NULL REFERENCES quotation_revisions(id) ON DELETE CASCADE,
+        actor_id INTEGER NOT NULL REFERENCES users(id),
+        stage TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        previous_status TEXT DEFAULT '',
+        new_status TEXT NOT NULL,
+        remarks TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quotation_id INTEGER NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+        revision_id INTEGER REFERENCES quotation_revisions(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        comment TEXT NOT NULL,
+        is_internal INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_catalog_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        specification TEXT DEFAULT '',
+        category TEXT NOT NULL,
+        subcategory TEXT DEFAULT '',
+        default_unit TEXT NOT NULL DEFAULT 'lot',
+        mat_unit_cost REAL NOT NULL DEFAULT 0,
+        lbr_unit_cost REAL NOT NULL DEFAULT 0,
+        default_mat_gp_pct REAL NOT NULL DEFAULT 0.3,
+        default_lbr_gp_pct REAL NOT NULL DEFAULT 0.3,
+        supplier_ref TEXT DEFAULT '',
+        is_general_requirement INTEGER NOT NULL DEFAULT 0,
+        calc_rule TEXT DEFAULT 'fixed',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        remarks TEXT DEFAULT '',
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_item_price_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_item_id INTEGER NOT NULL REFERENCES quotation_catalog_items(id) ON DELETE CASCADE,
+        cost_type TEXT NOT NULL,
+        previous_cost REAL NOT NULL DEFAULT 0,
+        new_cost REAL NOT NULL DEFAULT 0,
+        effective_date TEXT NOT NULL,
+        supplier_ref TEXT DEFAULT '',
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        remarks TEXT DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_units (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        section_default TEXT DEFAULT 'B',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1
+      );
+
+      CREATE TABLE IF NOT EXISTS ph_locations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        region TEXT NOT NULL,
+        province TEXT NOT NULL,
+        municipality TEXT NOT NULL,
+        barangay TEXT DEFAULT '',
+        zip_code TEXT DEFAULT '',
+        distance_km REAL NOT NULL DEFAULT 0,
+        mobilization_tier TEXT DEFAULT 'Metro',
+        base_mobilization_cost REAL NOT NULL DEFAULT 0
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        company_name TEXT NOT NULL DEFAULT 'REV1 CONSTRUCTION CORP.',
+        company_address TEXT NOT NULL DEFAULT 'CM 104, CITI CONDOS, 214 MALINAO ST., BRGY. HIGHWAY HILLS, MANDALUYONG CITY',
+        company_email TEXT NOT NULL DEFAULT 'info@rev1corp.com',
+        company_phone TEXT NOT NULL DEFAULT '(+632) 8516 - 4938',
+        payee_name TEXT NOT NULL DEFAULT 'REV1 CONSTRUCTION CORP',
+        prefix TEXT NOT NULL DEFAULT 'RCC',
+        year_code TEXT NOT NULL DEFAULT '26',
+        next_seq INTEGER NOT NULL DEFAULT 1998068,
+        doc_type TEXT NOT NULL DEFAULT 'CONS',
+        default_vat_rate REAL NOT NULL DEFAULT 12,
+        default_mat_gp_pct REAL NOT NULL DEFAULT 0.3,
+        default_lbr_gp_pct REAL NOT NULL DEFAULT 0.3,
+        max_estimator_discount_pct REAL NOT NULL DEFAULT 2,
+        max_pm_discount_pct REAL NOT NULL DEFAULT 5,
+        min_gp_warning_pct REAL NOT NULL DEFAULT 20,
+        require_two_step_approval INTEGER NOT NULL DEFAULT 1,
+        allow_self_approval INTEGER NOT NULL DEFAULT 0,
+        default_terms_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE TABLE IF NOT EXISTS quotation_conversion_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        quotation_id INTEGER NOT NULL REFERENCES quotations(id) ON DELETE CASCADE,
+        revision_id INTEGER NOT NULL REFERENCES quotation_revisions(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        converted_by INTEGER NOT NULL REFERENCES users(id),
+        override_reason TEXT DEFAULT '',
+        budget_initialized INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_quote_revisions_q ON quotation_revisions(quotation_id);
+      CREATE INDEX IF NOT EXISTS idx_quote_items_rev ON quotation_items(revision_id, section_id);
+      CREATE INDEX IF NOT EXISTS idx_quote_catalog_cat ON quotation_catalog_items(category, is_active);
+      CREATE INDEX IF NOT EXISTS idx_ph_locations_prov ON ph_locations(province, municipality);
+
+      UPDATE modules
+      SET description = 'REV1 Quotation, Estimating, GP Pricing Engine, Confidentiality Controls & Project Conversion.',
+          version = '1.0.0',
+          required_permissions_json = '["view","create","edit","submit","review","approve","reject","export","view_internal_costing","override_pricing","apply_discount","approve_discount","convert_project","manage_settings"]'
+      WHERE slug = 'quotations';
+    `,
+  },
 ];
 
 export function seedDefaultRolePermissions(): void {
@@ -799,6 +1105,23 @@ export function seedDefaultRolePermissions(): void {
     'export',
     'publish_client',
   ];
+  const quotationFullActions = [
+    'view',
+    'create',
+    'edit',
+    'delete',
+    'submit',
+    'review',
+    'approve',
+    'reject',
+    'export',
+    'view_internal_costing',
+    'override_pricing',
+    'apply_discount',
+    'approve_discount',
+    'convert_project',
+    'manage_settings',
+  ];
 
   const tx = db.transaction(() => {
     for (const role of roles) {
@@ -808,13 +1131,18 @@ export function seedDefaultRolePermissions(): void {
             insert.run(role.id, 'admin', 'view');
             continue;
           }
-          for (const a of allActions) {
+          const acts = m === 'quotations' ? quotationFullActions : allActions;
+          for (const a of acts) {
             insert.run(role.id, m, a);
           }
         }
       } else if (role.slug === 'project_manager') {
         for (const m of allModules.filter((x) => x !== 'admin')) {
-          for (const a of allActions) {
+          const acts =
+            m === 'quotations'
+              ? ['view', 'create', 'edit', 'submit', 'review', 'approve', 'export', 'view_internal_costing', 'apply_discount', 'convert_project']
+              : allActions;
+          for (const a of acts) {
             insert.run(role.id, m, a);
           }
         }
@@ -823,6 +1151,9 @@ export function seedDefaultRolePermissions(): void {
           for (const a of ['view', 'create', 'edit', 'submit', 'review']) {
             insert.run(role.id, m, a);
           }
+        }
+        for (const a of ['view', 'create', 'edit', 'submit', 'view_internal_costing', 'export']) {
+          insert.run(role.id, 'quotations', a);
         }
         insert.run(role.id, 'procurement', 'view');
         insert.run(role.id, 'procurement', 'create');
@@ -842,11 +1173,16 @@ export function seedDefaultRolePermissions(): void {
           }
         }
         insert.run(role.id, 'financials', 'view');
+        // Procurement officer may view client-facing quote line items for sourcing reference, without internal GP/costing by default
+        insert.run(role.id, 'quotations', 'view');
       } else if (role.slug === 'finance_officer') {
-        for (const m of ['projects', 'financials', 'procurement', 'documents', 'communications', 'reports', 'quotations']) {
+        for (const m of ['projects', 'financials', 'procurement', 'documents', 'communications', 'reports']) {
           for (const a of ['view', 'create', 'edit', 'review', 'approve', 'reject', 'export']) {
             insert.run(role.id, m, a);
           }
+        }
+        for (const a of ['view', 'review', 'approve', 'reject', 'export', 'view_internal_costing', 'approve_discount']) {
+          insert.run(role.id, 'quotations', a);
         }
       } else if (role.slug === 'hr_admin') {
         for (const m of ['projects', 'personnel', 'documents', 'communications', 'reports']) {

@@ -269,20 +269,171 @@ router.patch('/modules/:slug/toggle', requirePermission('admin', 'edit'), (req: 
 
 // --- Clients Directory ---
 router.get('/clients', requirePermission('projects', 'view'), (_req, res) => {
-  const clients = db.prepare('SELECT * FROM clients ORDER BY company_name ASC').all();
-  res.json({ clients });
+  const clients = db
+    .prepare(
+      `SELECT c.*,
+              (SELECT COUNT(*) FROM projects p WHERE p.client_id = c.id) AS project_count
+       FROM clients c
+       ORDER BY c.company_name ASC`
+    )
+    .all() as any[];
+
+  const portalLinks = db
+    .prepare(
+      `SELECT cu.client_id, u.id, u.full_name, u.email, u.phone, u.is_active
+       FROM client_users cu
+       JOIN users u ON u.id = cu.user_id
+       ORDER BY u.full_name ASC`
+    )
+    .all() as Array<{
+    client_id: number;
+    id: number;
+    full_name: string;
+    email: string;
+    phone: string;
+    is_active: number;
+  }>;
+
+  const enriched = clients.map((c) => ({
+    ...c,
+    portal_users: portalLinks.filter((u) => u.client_id === c.id),
+  }));
+
+  res.json({ clients: enriched });
 });
 
 router.post('/clients', requirePermission('projects', 'create'), (req: AuthenticatedRequest, res) => {
-  const { companyName, primaryContact, email, phone, address } = req.body || {};
-  if (!companyName || !primaryContact || !email) {
-    res.status(400).json({ error: 'Company name, primary contact, and email are required' });
+  const {
+    companyName,
+    primaryContact,
+    representativeTitle,
+    email,
+    phone,
+    secondaryContact,
+    address,
+    notes,
+  } = req.body || {};
+
+  if (
+    !companyName ||
+    !String(companyName).trim() ||
+    !primaryContact ||
+    !String(primaryContact).trim() ||
+    !email ||
+    !String(email).trim()
+  ) {
+    res.status(400).json({ error: 'Company name, client representative, and email are required' });
     return;
   }
+
+  const cleanCompany = String(companyName).trim();
+  const cleanRep = String(primaryContact).trim();
+  const cleanTitle = typeof representativeTitle === 'string' ? representativeTitle.trim() : '';
+  const cleanEmail = String(email).trim().toLowerCase();
+  const cleanPhone = typeof phone === 'string' ? phone.trim() : '';
+  const cleanSecondary = typeof secondaryContact === 'string' ? secondaryContact.trim() : '';
+  const cleanAddress = typeof address === 'string' ? address.trim() : '';
+  const cleanNotes = typeof notes === 'string' ? notes.trim() : '';
+
   const info = db
-    .prepare('INSERT INTO clients (company_name, primary_contact, email, phone, address) VALUES (?, ?, ?, ?, ?)')
-    .run(companyName.trim(), primaryContact.trim(), email.trim(), phone || '', address || '');
-  res.status(201).json({ id: Number(info.lastInsertRowid) });
+    .prepare(
+      `INSERT INTO clients (
+        company_name, primary_contact, representative_title, email, phone, secondary_contact, address, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(cleanCompany, cleanRep, cleanTitle, cleanEmail, cleanPhone, cleanSecondary, cleanAddress, cleanNotes);
+
+  const clientId = Number(info.lastInsertRowid);
+  const created = db.prepare('SELECT * FROM clients WHERE id = ?').get(clientId);
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'CREATE_CLIENT',
+    module: 'admin',
+    recordType: 'client',
+    recordRef: `CLT-${clientId}`,
+    newValue: { companyName: cleanCompany, primaryContact: cleanRep, email: cleanEmail, phone: cleanPhone, address: cleanAddress },
+    ipAddress: req.ip || '',
+  });
+
+  res.status(201).json({ id: clientId, client: created });
+});
+
+router.patch('/clients/:id', requirePermission('projects', 'edit'), (req: AuthenticatedRequest, res) => {
+  const clientId = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM clients WHERE id = ?').get(clientId) as any;
+  if (!existing) {
+    res.status(404).json({ error: 'Client not found' });
+    return;
+  }
+
+  const {
+    companyName,
+    primaryContact,
+    representativeTitle,
+    email,
+    phone,
+    secondaryContact,
+    address,
+    notes,
+  } = req.body || {};
+
+  const nextCompany = companyName !== undefined ? String(companyName).trim() : existing.company_name;
+  const nextRep = primaryContact !== undefined ? String(primaryContact).trim() : existing.primary_contact;
+  const nextTitle = representativeTitle !== undefined ? String(representativeTitle).trim() : existing.representative_title || '';
+  const nextEmail = email !== undefined ? String(email).trim().toLowerCase() : existing.email;
+  const nextPhone = phone !== undefined ? String(phone).trim() : existing.phone || '';
+  const nextSecondary = secondaryContact !== undefined ? String(secondaryContact).trim() : existing.secondary_contact || '';
+  const nextAddress = address !== undefined ? String(address).trim() : existing.address || '';
+  const nextNotes = notes !== undefined ? String(notes).trim() : existing.notes || '';
+
+  if (!nextCompany || !nextRep || !nextEmail) {
+    res.status(400).json({ error: 'Company name, client representative, and email cannot be empty' });
+    return;
+  }
+
+  db.prepare(
+    `UPDATE clients SET
+      company_name = ?,
+      primary_contact = ?,
+      representative_title = ?,
+      email = ?,
+      phone = ?,
+      secondary_contact = ?,
+      address = ?,
+      notes = ?
+     WHERE id = ?`
+  ).run(nextCompany, nextRep, nextTitle, nextEmail, nextPhone, nextSecondary, nextAddress, nextNotes, clientId);
+
+  const updated = db.prepare('SELECT * FROM clients WHERE id = ?').get(clientId);
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'UPDATE_CLIENT',
+    module: 'admin',
+    recordType: 'client',
+    recordRef: `CLT-${clientId}`,
+    previousValue: {
+      companyName: existing.company_name,
+      primaryContact: existing.primary_contact,
+      email: existing.email,
+      phone: existing.phone,
+      address: existing.address,
+    },
+    newValue: {
+      companyName: nextCompany,
+      primaryContact: nextRep,
+      representativeTitle: nextTitle,
+      email: nextEmail,
+      phone: nextPhone,
+      address: nextAddress,
+    },
+    ipAddress: req.ip || '',
+  });
+
+  res.json({ ok: true, client: updated });
 });
 
 // --- Audit Trail (Read-Only, immutable) ---

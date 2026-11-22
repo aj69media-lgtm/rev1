@@ -77,6 +77,20 @@ export function formatCurrencyExact(amount: number | null | undefined): string {
   }).format(val);
 }
 
+export function formatMoney(
+  amount: number | null | undefined,
+  currency = 'PHP',
+  decimals = 2
+): string {
+  const val = Number(amount || 0);
+  return new Intl.NumberFormat('en-PH', {
+    style: 'currency',
+    currency: currency || 'PHP',
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  }).format(val);
+}
+
 export function formatDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   return iso.slice(0, 10);

@@ -143,7 +143,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         },
         {
           id: 'quotations',
-          label: 'Quotations (Phase 6)',
+          label: 'Quotations & Estimating',
           icon: <Calculator className="h-4 w-4" />,
           visible: hasPerm('quotations', 'view'),
         },
@@ -171,7 +171,7 @@ export const AppShell: React.FC<AppShellProps> = ({
     equipment: 'Equipment & Inventory',
     revisions: 'Client Revision Requests',
     reports: 'Management Reports & Export',
-    quotations: 'Quotations Foundation (Phase 6)',
+    quotations: 'REV1 Quotation & Estimating',
     admin: 'System Administration & Maintenance',
   };
 

@@ -1,0 +1,2141 @@
+# CBMS MODULE DEVELOPMENT MASTER PROMPT
+# REV1 QUOTATION, ESTIMATING, AND COMMERCIAL MANAGEMENT MODULE
+
+**Project:** REV1 Construction Corp.  
+**Parent application:** Construction Business Management System (CBMS)  
+**Module name:** REV1 Quotation and Estimating  
+**Module type:** Integrated, independently maintainable CBMS business module  
+**Primary reference:** Uploaded REV1 Quotation Excel workbook
+
+---
+
+# 1. DEVELOPMENT OBJECTIVE
+
+Develop a complete, production-ready **REV1 Quotation and Construction Estimating Module** as a native part of the existing Construction Business Management System (CBMS).
+
+The module must digitize, preserve, and improve the company's existing quotation preparation and computation process.
+
+The existing Excel workbook is the primary business reference:
+
+**RCC26-1998067-CONSrev01 (Likha ni Inay Cebu ground floor) - OFFICE COPY(1).xlsm**
+
+The workbook represents an established company workflow. Its existing calculation methods, pricing structure, quotation format, configuration options, and commercial rules must be studied and accurately reproduced before improvements are introduced.
+
+The module must allow authorized REV1 personnel to prepare quotations, calculate construction costs, apply approved pricing rules, generate professional quotation documents, obtain internal approvals, manage revisions, and convert accepted quotations into CBMS projects.
+
+This must be a fully functional database-driven application module.
+
+**Do not simply embed the Excel workbook, display a spreadsheet in the browser, or create a quotation form with incomplete calculations.**
+
+The CBMS must become the authoritative system for quotation records and calculations.
+
+## Primary objectives
+
+1. Reproduce the existing REV1 quotation calculations accurately.
+2. Preserve the distinction between internal costs and client-facing selling prices.
+3. Preserve the existing gross profit calculation methodology.
+4. Reproduce the workbook's configurable project requirements and quotation options.
+5. Provide an easy-to-use construction estimating interface.
+6. Maintain reusable construction item, material, labor, and pricing databases.
+7. Generate professional client-facing quotation PDFs.
+8. Generate restricted internal costing reports.
+9. Support quotation approvals and revisions.
+10. Convert accepted quotations into CBMS projects without unnecessary re-encoding.
+11. Integrate with the CBMS project, financial, procurement, inventory, document, user, and client modules.
+12. Preserve the original workbook as a permanent calculation reference for testing and future validation.
+
+---
+
+# 2. NON-NEGOTIABLE INSTRUCTION: STUDY THE ORIGINAL WORKBOOK FIRST
+
+Before implementing the quotation calculation engine, perform a comprehensive technical and business analysis of the uploaded workbook.
+
+Do not begin by replacing its formulas with generic construction estimating formulas.
+
+The workbook contains five worksheets:
+
+| Worksheet | Visibility | Purpose to investigate |
+|---|---|---|
+| Title Page | Visible | Main quotation layout, item breakdown, pricing, totals, and printable quotation |
+| Hidden | Very hidden | Quotation inputs, configuration options, payment terms, project data, and calculation settings |
+| PT_Directory | Visible | Personnel and quotation preparer/approver reference |
+| PH_Data | Hidden | Philippine location, ZIP code, and distance reference data |
+| Source | Very hidden | Supporting item and calculation template |
+
+The workbook also contains:
+
+- Approximately 6,285 formula cells.
+- Named ranges.
+- Array formulas.
+- Hidden configuration values.
+- VBA procedures and user forms.
+- Conditional item visibility.
+- Dynamic item and section structures.
+- Existing quotation and cost calculations.
+
+Inspect every worksheet, including hidden and very hidden worksheets.
+
+Inspect all named ranges and their references.
+
+Inspect the workbook's formulas, cell dependencies, VBA procedures, and relevant input/output relationships.
+
+## 2.1 Required analysis deliverable
+
+Before implementing the calculation engine, prepare a technical document named:
+
+**REV1 Quotation Workbook Analysis and Calculation Specification**
+
+It must contain:
+
+1. Workbook structure.
+2. Worksheet purpose and relationships.
+3. Named range inventory.
+4. Input field inventory.
+5. Calculated field inventory.
+6. Pricing formulas.
+7. Gross profit calculation method.
+8. Section subtotal methodology.
+9. Overall quotation calculation methodology.
+10. VAT calculation methodology.
+11. Special discount methodology.
+12. Project duration calculations.
+13. Manpower calculations.
+14. Location and mobilization calculations.
+15. Optional scope behavior.
+16. Payment terms and warranty configuration.
+17. VBA function inventory.
+18. Existing workbook errors and unresolved references.
+19. Formula dependency map.
+20. Test cases and expected calculation results.
+
+For every important calculation, document:
+
+- Source worksheet.
+- Source cell or named range.
+- Input values.
+- Formula.
+- Expected result.
+- Corresponding CBMS implementation.
+
+Do not mark a formula as understood merely because its cell contains a recognizable formula.
+
+Trace the actual inputs and dependent outputs.
+
+## 2.2 Existing workbook errors and limitations
+
+The workbook contains some broken `#REF!` references and formulas using modern Excel functions, including `AGGREGATE`, `MAXIFS`, `IFS`, and `CONCAT`.
+
+Some formulas also use array formulas and conditional text values.
+
+Investigate each relevant issue.
+
+Classify findings as:
+
+- Valid existing business logic.
+- Legacy formula.
+- Broken formula.
+- Unused reference.
+- Unresolved business rule.
+- Formula requiring manual confirmation.
+
+Do not silently reproduce broken references.
+
+Do not invent missing formulas.
+
+If an important business rule cannot be reliably determined from the workbook, identify it as an unresolved item and request clarification rather than making an unsupported assumption.
+
+---
+
+# 3. UNDERSTAND THE EXISTING REV1 PRICING MODEL
+
+The existing workbook separates material costs, labor costs, selling rates, and internal costs.
+
+This distinction is fundamental and must be preserved.
+
+The application must never confuse:
+
+- Material cost.
+- Labor cost.
+- Total direct cost.
+- Selling price.
+- Gross profit.
+- Markup.
+- Gross profit margin.
+- VAT.
+- Discount.
+- Final client quotation amount.
+
+## 3.1 Material and labor selling rates
+
+The workbook uses a calculation structure equivalent to:
+
+**Material selling rate**
+
+`ROUNDUP(Material Unit Cost / (1 - Material GP Percentage), 0)`
+
+**Labor selling rate**
+
+`ROUNDUP(Labor Unit Cost / (1 - Labor GP Percentage), 0)`
+
+**Combined selling unit rate**
+
+`Material Selling Rate + Labor Selling Rate`
+
+**Extended selling amount**
+
+`Quantity × Combined Selling Unit Rate`
+
+These formulas are visible in the Title Page worksheet.
+
+The workbook uses separate gross profit percentages for materials and labor.
+
+The initial example uses 30% for both, but this must not be hard-coded as a permanent rule.
+
+### Critical pricing rule
+
+The percentage in these formulas is a gross profit margin, not a simple markup percentage.
+
+For example, a cost of PHP 1,000 with a 30% gross profit margin produces a selling price of approximately PHP 1,429 when rounded upward to the next whole peso.
+
+A simple 30% markup would produce PHP 1,300, which is not equivalent.
+
+**Never replace the existing gross profit margin method with a simple markup calculation.**
+
+## 3.2 Rounding methodology
+
+The workbook uses `ROUNDUP(...,0)` for the material and labor selling rates.
+
+This means the resulting rate is rounded upward to the next whole peso.
+
+Reproduce this behavior exactly for the corresponding calculations.
+
+Do not replace it with ordinary rounding or truncate decimal values.
+
+Investigate whether any other calculation stages use different rounding behavior.
+
+Document rounding at every stage, including:
+
+- Unit selling rates.
+- Extended amounts.
+- Section subtotals.
+- Overall totals.
+- VAT.
+- Discount.
+- Final amount.
+
+Do not apply rounding more than once where the workbook does not do so.
+
+Use decimal-safe financial calculations on the backend.
+
+Store sufficient precision for calculations and apply the validated display and rounding rules at the correct stages.
+
+## 3.3 Internal cost and selling price separation
+
+The original workbook contains separate columns for selling rates and internal cost information.
+
+Recreate that distinction in the application.
+
+At the item level, maintain separate fields for:
+
+**Internal costing**
+- Material unit cost.
+- Labor unit cost.
+- Material extended cost.
+- Labor extended cost.
+- Total direct cost.
+
+**Client-facing pricing**
+- Material selling rate.
+- Labor selling rate.
+- Combined selling unit rate.
+- Extended selling amount.
+
+**Profitability**
+- Material gross profit.
+- Labor gross profit.
+- Total gross profit.
+- Gross profit margin.
+
+The exact workbook column mapping must be documented in the workbook analysis.
+
+The internal costing data must remain available to authorized users but must not automatically appear in client-facing quotation documents.
+
+## 3.4 Manual and special pricing values
+
+The workbook contains conditional formulas that account for text values such as `included` and `hidden`, as well as calculated numeric values.
+
+Investigate their exact behavior.
+
+Reproduce supported cases as explicit application features.
+
+Provide clear distinctions between:
+
+- Normal calculated item.
+- Included item.
+- Excluded item.
+- Hidden item.
+- Manually overridden item.
+- Special text-based pricing entry.
+
+Where an item has a manual price override, record:
+
+- Original calculated amount.
+- Override amount.
+- User responsible.
+- Date and time.
+- Reason.
+- Approval, if required.
+
+Do not treat a text entry as a numeric cost.
+
+Do not include hidden or excluded items in totals unless the original validated business rules explicitly require it.
+
+---
+
+# 4. QUOTATION SUMMARY, VAT, AND DISCOUNT
+
+The workbook calculates section totals and then consolidates the quotation summary.
+
+Reproduce the original calculation sequence.
+
+## 4.1 Section subtotals
+
+For every quotation section, calculate and retain:
+
+- Material cost subtotal.
+- Labor cost subtotal.
+- Total direct cost.
+- Material selling subtotal.
+- Labor selling subtotal.
+- Total selling subtotal.
+- Gross profit amount.
+- Gross profit margin.
+
+Use actual quotation items belonging to the relevant section.
+
+Do not count both individual item totals and their section subtotals in the final total.
+
+Prevent duplicate or omitted amounts.
+
+## 4.2 Overall quotation total
+
+Calculate the pre-VAT quotation total from the approved section subtotals.
+
+Maintain separate values for:
+
+- Total material cost.
+- Total labor cost.
+- Total direct cost.
+- Total material selling price.
+- Total labor selling price.
+- Total selling price before VAT.
+- Total gross profit.
+- Overall gross profit margin.
+
+The overall gross profit margin must be calculated using the appropriate total cost and total selling price.
+
+Do not simply average item-level gross profit percentages.
+
+## 4.3 VAT
+
+The uploaded workbook uses a 12% VAT calculation on the quotation total.
+
+The example structure is:
+
+`VAT = Total Selling Price Before VAT × 12%`
+
+`Total Selling Price (VAT Inclusive) = Total Selling Price Before VAT + VAT`
+
+Reproduce the existing 12% VAT behavior as the initial default.
+
+However:
+
+- Store the VAT rate used in every quotation.
+- Do not allow later configuration changes to alter historical quotations.
+- Make VAT settings accessible only to authorized administrators.
+- Clearly identify whether the quotation is VAT-exclusive or VAT-inclusive.
+- Prevent double application of VAT.
+- Preserve the workbook's calculation sequence and rounding behavior.
+
+Any future changes to VAT treatment must be explicitly configured and tested.
+
+## 4.4 Special discount
+
+The workbook contains a special discount calculation applied to the VAT-inclusive quotation total.
+
+The visible formula structure is equivalent to:
+
+`Discount Amount = Discount Percentage × VAT-Inclusive Selling Price`
+
+`Total Discounted Price = VAT-Inclusive Selling Price - Discount Amount`
+
+The example uses a discount input in the quotation summary.
+
+Investigate the cell formatting and input behavior to establish whether the user enters a percentage or another value.
+
+Reproduce the validated workbook behavior.
+
+The user interface should display:
+
+- Original selling price.
+- VAT.
+- VAT-inclusive total.
+- Discount percentage or approved discount value.
+- Discount amount.
+- Final discounted quotation amount.
+
+Support configurable approval thresholds.
+
+Any discount above the authorized user's limit must require higher-level approval.
+
+Do not allow unauthorized users to modify discount values or VAT settings.
+
+## 4.5 Commercial calculation reconciliation
+
+For every quotation, the application must be able to produce a calculation summary that reconciles:
+
+`Total Selling Price Before VAT + VAT - Discount = Final Quotation Amount`
+
+Use the actual approved calculation sequence and rounding rules.
+
+The application must show the calculation breakdown to authorized internal users.
+
+---
+
+# 5. WORKBOOK CONFIGURATION AND GENERAL REQUIREMENTS
+
+The `Hidden` worksheet contains configuration values and inputs that affect the quotation.
+
+Recreate these as structured application settings and quotation inputs.
+
+Do not expose the original hidden spreadsheet interface.
+
+## 5.1 General Requirements
+
+The workbook includes General Requirements items such as:
+
+- Mobilization/Demobilization.
+- Site Visit.
+- Manpower Transport/Delivery.
+- Rapid Testing.
+- PPE.
+- Tools and Equipment.
+- Site Management and Temporary Facilities.
+- Accommodation.
+- Utilities.
+- Engineering/Supervision.
+- Food Allowance.
+- Plans, Prints, Professional Sign and Seals.
+- Professional Fee.
+- Design Fee.
+- Print Outs.
+- Hauling of Materials.
+- Bonds/Insurances.
+- Government Permits.
+- Engineering, Programming, Testing and Commissioning.
+- Delivery Fee.
+
+These are initial reference items, not a permanently fixed list.
+
+Create an editable General Requirements library.
+
+Allow authorized users to:
+
+- Add new requirements.
+- Edit descriptions.
+- Set default quantities.
+- Set units.
+- Set material costs.
+- Set labor costs.
+- Set gross profit percentages.
+- Configure calculation rules.
+- Activate or deactivate items.
+- Select which requirements apply to a quotation.
+
+Allow users to add custom requirements to individual quotations.
+
+## 5.2 Optional quotation scope
+
+The workbook contains named options such as:
+
+- `chkSupply`
+- `chkInstall`
+- `chkDelivery`
+- `chkDesign`
+- `chkTC`
+- `optCons`
+- `optAux`
+- `optMEPF`
+- `optMisc`
+- `optOptions`
+
+Trace the exact formulas and VBA behavior associated with these settings.
+
+Determine how they affect:
+
+- Quotation subject.
+- Item visibility.
+- Included scope.
+- General Requirements.
+- Calculation totals.
+- Quotation notes.
+- Scope descriptions.
+
+Reproduce the actual business behavior.
+
+Do not assume that enabling or disabling an option simply hides an item.
+
+An option may affect calculations, descriptions, or other dependent values.
+
+The interface must clearly show which options are selected and which financial or document sections are affected.
+
+When an option is disabled, preserve its draft data where appropriate so it can be re-enabled without losing previously entered information.
+
+## 5.3 Project duration
+
+The workbook includes duration controls for:
+
+- Daily.
+- Weekly.
+- Monthly.
+- Annually.
+
+It also contains project duration values expressed in days, weeks, months, and years.
+
+Investigate the exact conversion and dependent calculations.
+
+The workbook contains duration-related calculations for items such as accommodation, utilities, and engineering/supervision.
+
+Reproduce the existing behavior only after verifying the formulas.
+
+Do not arbitrarily convert all durations using a single assumed number of days per month or year.
+
+Where the workbook uses a particular conversion, preserve it.
+
+Display the input duration and the derived calculation values clearly.
+
+## 5.4 Manpower calculations
+
+The workbook includes an estimated manpower input and derived staff/team calculations.
+
+One visible formula in the Hidden worksheet calculates a team-related value using a structure equivalent to:
+
+`ROUNDUP(Manpower / 10, 0) + 1 + QUOTIENT(Manpower, 25) + 3 × QUOTIENT(Manpower, 100)`
+
+Another calculated value combines project staff and manpower.
+
+Trace how these values are used in the quotation.
+
+Reproduce the validated calculations.
+
+Display:
+
+- Estimated project manpower.
+- Derived staff/team figures.
+- Related labor or management costs.
+- Any manually approved adjustments.
+
+Do not assume that every derived manpower value represents a headcount or that it is interchangeable with actual project personnel.
+
+## 5.5 Location and mobilization
+
+The `PH_Data` worksheet contains Philippine location and distance reference information.
+
+Inspect the data structure and identify the exact lookup behavior.
+
+The workbook includes location selection fields for province/city and town/barangay and uses location data in a distance-related calculation.
+
+Recreate the location reference database.
+
+Allow users to select:
+
+- Province.
+- City or municipality.
+- Barangay or town.
+- ZIP code.
+- Project site address.
+
+Investigate how the selected location affects:
+
+- Project distance.
+- Mobilization.
+- Transportation.
+- Accommodation.
+- Other location-dependent costs.
+
+Do not assume that the workbook's distance values are live road distances.
+
+Preserve the meaning and limitations of the source data.
+
+Make distance and location assumptions visible to authorized quotation preparers.
+
+Allow authorized administrators to update the location database without changing historical quotations.
+
+---
+
+# 6. QUOTATION MODULE ARCHITECTURE AND CBMS INTEGRATION
+
+Install the module within the existing CBMS modular monolithic architecture.
+
+Suggested module name:
+
+**REV1 Quotation and Estimating**
+
+Suggested navigation:
+
+**Commercial Management**
+- Quotation Dashboard.
+- Quotations.
+- New Quotation.
+- Quotation Templates.
+- Item and Cost Database.
+- Material Price Database.
+- Labor Rate Database.
+- General Requirements Library.
+- Supplier References.
+- Approval Queue.
+- Quotation Reports.
+- Quotation Settings.
+
+The module must use existing CBMS services.
+
+Reuse:
+
+- Authentication.
+- Users.
+- Roles.
+- Permissions.
+- Personnel.
+- Clients.
+- Projects.
+- Suppliers.
+- Documents.
+- Notifications.
+- Audit trail.
+- Financial records.
+- Procurement records.
+
+Do not create duplicate client, user, supplier, or project databases.
+
+Use the existing PHP/MySQL backend and compiled React frontend.
+
+Follow the CBMS GoDaddy cPanel shared-hosting compatibility requirements.
+
+Do not introduce a separate quotation server or mandatory paid external service.
+
+---
+
+# 7. QUOTATION NUMBERING AND RECORD MANAGEMENT
+
+Create a configurable quotation numbering system.
+
+The example workbook uses a reference pattern similar to:
+
+`RCC26-1998067-CONS`
+
+This is an example of the existing convention, not a fixed value for every future quotation.
+
+Allow authorized administrators to configure:
+
+- Company prefix.
+- Year code.
+- Sequential number.
+- Document type.
+- Other applicable reference components.
+
+Prevent duplicate quotation numbers.
+
+Create a unique quotation reference at the appropriate point in the quotation workflow.
+
+Maintain separate revision numbers.
+
+For example:
+
+- Original: REV00.
+- First revision: REV01.
+- Second revision: REV02.
+
+Do not use a revision number as a replacement for the quotation's main reference.
+
+Maintain quotation statuses such as:
+
+- Draft.
+- For Review.
+- For Approval.
+- Rejected.
+- Approved.
+- Sent to Client.
+- Revised.
+- Accepted.
+- Declined.
+- Expired.
+- Cancelled.
+
+---
+
+# 8. QUOTATION CREATION WORKFLOW
+
+Create a guided quotation preparation process.
+
+## Step 1 — Client
+
+Select an existing client from the central CBMS database or create a new client through the authorized client management process.
+
+Capture:
+
+- Client company or individual.
+- Contact person.
+- Position.
+- Email.
+- Telephone number.
+- Billing address, where applicable.
+
+## Step 2 — Project information
+
+Capture:
+
+- Project name.
+- Project location.
+- Project address.
+- Province/city.
+- Municipality.
+- Barangay.
+- Project description.
+- Scope of work.
+- Estimated duration.
+- Estimated manpower.
+- Project notes.
+- Relevant attachments.
+
+Allow quotations to be created before a formal CBMS project record exists.
+
+## Step 3 — Quotation details
+
+Capture:
+
+- Quotation reference.
+- Revision.
+- Date.
+- Quotation subject.
+- Client representative.
+- Attention/contact person.
+- Through/contact person.
+- Prepared by.
+- Proposed approver.
+
+The subject should support the company's existing style, such as:
+
+"SUPPLY OF LABOR AND MATERIALS FOR [PROJECT NAME]"
+
+Do not force every quotation to use the same subject.
+
+## Step 4 — Scope configuration
+
+Provide the validated options for:
+
+- Construction scope.
+- Supply.
+- Installation.
+- Delivery.
+- Design.
+- Testing and commissioning.
+- Auxiliary requirements.
+- Miscellaneous requirements.
+- Project duration.
+- Manpower.
+- General Requirements.
+
+## Step 5 — Cost estimation
+
+Allow the user to build the item breakdown and calculate the quotation.
+
+## Step 6 — Review and approval
+
+Allow authorized users to review the quotation and internal costing.
+
+## Step 7 — Document generation
+
+Generate the client quotation and internal costing report.
+
+## Step 8 — Issuance
+
+After required approvals, issue the quotation to the client.
+
+## Step 9 — Client decision
+
+Record acceptance, rejection, or request for revision.
+
+## Step 10 — Project conversion
+
+Convert an approved and accepted quotation into a CBMS project through a controlled workflow.
+
+---
+
+# 9. CONSTRUCTION ITEM AND COST DATABASE
+
+Create a reusable item and cost database.
+
+The original workbook includes construction sections and item descriptions. Use these as reference data when building the initial catalog.
+
+Allow configurable categories such as:
+
+- General Requirements.
+- General Items.
+- Architectural Works.
+- Masonry Works.
+- Tiling Works.
+- Painting Works.
+- Carpentry Works.
+- Custom Millwork.
+- Doors and Windows.
+- Plumbing Works.
+- Electrical Works.
+- Commercial Fixtures.
+- Other configurable construction categories.
+
+Do not hard-code the catalog as a permanent fixed list.
+
+## 9.1 Item fields
+
+Each item should support:
+
+- Item code.
+- Item name.
+- Description.
+- Technical specification.
+- Category.
+- Subcategory.
+- Default unit.
+- Material unit cost.
+- Labor unit cost.
+- Material GP percentage.
+- Labor GP percentage.
+- Selling rate.
+- Supplier reference.
+- Active/inactive status.
+- Remarks.
+
+Support units such as:
+
+- pcs.
+- sets.
+- lots.
+- bags.
+- sheets.
+- meters.
+- square meters.
+- cubic meters.
+- kilograms.
+- boxes.
+- rolls.
+- gallons.
+- days.
+- hours.
+
+Allow administrators to add units.
+
+## 9.2 Item management
+
+Allow authorized users to:
+
+- Search items.
+- Add items.
+- Edit items.
+- Duplicate items.
+- Archive items.
+- Create custom items.
+- Create categories.
+- Create subcategories.
+- Import catalog data.
+- Export catalog data.
+
+Custom items in a quotation must not automatically become permanent catalog entries.
+
+Require an explicit action to save a custom item into the shared database.
+
+## 9.3 Material and labor price history
+
+Maintain separate material and labor price histories.
+
+Each price history entry must record:
+
+- Item.
+- Cost type.
+- Previous cost.
+- New cost.
+- Effective date.
+- Supplier or source.
+- Updated by.
+- Remarks.
+
+When a quotation is created, preserve the selected costs and rates as quotation-specific historical values.
+
+Updating the item catalog must never silently change an existing quotation.
+
+An issued quotation must remain unchanged unless a new revision is created.
+
+---
+
+# 10. QUOTATION EDITOR AND USER EXPERIENCE
+
+Create a professional, modern, spreadsheet-like quotation editor.
+
+The purpose is to make the existing Excel workflow easier and safer without losing its flexibility.
+
+## 10.1 Main editor sections
+
+**A. Quotation Header**
+- Quotation reference.
+- Revision.
+- Client.
+- Project.
+- Site.
+- Date.
+- Preparer.
+- Approver.
+- Status.
+
+**B. Project Configuration**
+- Scope.
+- Project duration.
+- Manpower.
+- Location.
+- General Requirements.
+- Optional scope settings.
+
+**C. Item Breakdown**
+- Sections.
+- Subsections.
+- Item codes.
+- Descriptions.
+- Quantity.
+- Unit.
+- Material cost.
+- Labor cost.
+- GP percentages.
+- Selling rates.
+- Extended amounts.
+
+**D. Financial Summary**
+- Material cost.
+- Labor cost.
+- Total direct cost.
+- Selling price.
+- Gross profit.
+- VAT.
+- Discount.
+- Final quotation amount.
+
+**E. Quotation Conditions**
+- Scope notes.
+- Client considerations.
+- Payment terms.
+- Warranty.
+- Validity.
+- Exclusions.
+- Additional conditions.
+
+## 10.2 Dynamic section and row management
+
+Recreate the flexibility of the existing workbook's VBA functions for adding and arranging quotation rows and sections.
+
+Support:
+
+- Add section.
+- Add subsection.
+- Insert item.
+- Insert row.
+- Add row.
+- Duplicate row.
+- Delete draft row.
+- Rearrange items.
+- Drag-and-drop ordering.
+- Collapse and expand sections.
+- Add notes.
+- Add subtotals.
+- Hide or exclude items.
+- Restore hidden items.
+
+The editor must not be restricted to a fixed number of rows.
+
+## 10.3 Spreadsheet-like interaction
+
+Support:
+
+- Inline editing.
+- Keyboard navigation.
+- Tab and Enter navigation.
+- Automatic recalculation.
+- Searchable item selection.
+- Bulk item selection where practical.
+- Clear validation messages.
+- Save draft.
+- Autosave with visible status.
+- Undo where practical.
+- Preview.
+
+The interface must be usable by engineers preparing large quotations.
+
+Do not make the user open a separate page for every item.
+
+## 10.4 Calculation transparency
+
+Provide a calculation detail panel for authorized users.
+
+For each item, show:
+
+- Material cost.
+- Labor cost.
+- Material GP.
+- Labor GP.
+- Material selling rate.
+- Labor selling rate.
+- Combined selling rate.
+- Quantity.
+- Extended amount.
+- Total direct cost.
+- Gross profit.
+
+Allow the user to inspect the calculation without manually calculating values.
+
+---
+
+# 11. INTERNAL COSTING AND COMMERCIAL CONFIDENTIALITY
+
+This is a critical security and business requirement.
+
+The quotation system must maintain two distinct document and data presentation levels.
+
+## 11.1 Internal costing view
+
+Available only to authorized internal users.
+
+May contain:
+
+- Material unit costs.
+- Labor unit costs.
+- Supplier pricing.
+- Direct costs.
+- Material GP.
+- Labor GP.
+- Total direct cost.
+- Gross profit.
+- Gross profit margin.
+- Cost assumptions.
+- Pricing overrides.
+- Internal notes.
+- Discount authorization.
+- Management review remarks.
+
+## 11.2 Client-facing quotation view
+
+May contain only approved commercial information, such as:
+
+- Company branding.
+- Quotation reference.
+- Client information.
+- Project name.
+- Location.
+- Scope.
+- Item descriptions.
+- Quantity.
+- Unit.
+- Approved selling unit rates.
+- Selling amounts.
+- Section subtotals.
+- VAT.
+- Approved discount.
+- Final quotation amount.
+- Payment terms.
+- Warranty.
+- Validity.
+- Notes and exclusions.
+- Authorized signatures or signatory details.
+
+Never expose internal costing information unless a specifically authorized company policy permits it.
+
+## 11.3 Strict confidentiality requirements
+
+Never expose internal costs through:
+
+- Client-facing PDFs.
+- Client Portal.
+- Public quotation links.
+- Unrestricted API responses.
+- Browser page source.
+- Frontend state.
+- Hidden HTML elements.
+- Exported client spreadsheets.
+- Unauthorized reports.
+
+The backend must filter sensitive fields before returning data.
+
+Do not rely on hiding columns in the frontend.
+
+A user who can view a quotation must not automatically be authorized to view internal costing.
+
+Implement separate permissions for:
+
+- View client quotation.
+- View internal costing.
+- View material cost.
+- View labor cost.
+- View supplier pricing.
+- View gross profit.
+- View gross profit margin.
+- Apply discounts.
+- Approve discounts.
+- Override pricing.
+- Approve quotations.
+
+---
+
+# 12. QUOTATION PDF AND DOCUMENT GENERATION
+
+Create a professional client-facing quotation document based on the original REV1 quotation layout.
+
+Preserve the company's established commercial presentation while improving formatting, readability, and print quality.
+
+## 12.1 Client quotation PDF
+
+Include:
+
+- REV1 company branding.
+- Company address and contact information.
+- Quotation reference.
+- Revision.
+- Date.
+- Client information.
+- Contact person.
+- Project name.
+- Project location.
+- Quotation subject.
+- Scope of work.
+- Item breakdown.
+- Item descriptions.
+- Quantities.
+- Units.
+- Approved selling unit rates.
+- Extended selling amounts.
+- Section subtotals.
+- Total selling price.
+- VAT.
+- Approved discount.
+- Final discounted price.
+- Estimated manpower, where appropriate.
+- Estimated project duration.
+- Client considerations.
+- General terms and conditions.
+- Payment terms.
+- Warranty.
+- Validity.
+- Prepared by.
+- Approved by.
+
+The generated PDF must be suitable for professional submission to clients.
+
+Support multi-page documents.
+
+Provide consistent headers and footers, page numbering, and clean page breaks.
+
+Avoid splitting important totals or section headings from their associated items.
+
+## 12.2 Internal costing report
+
+Generate a separate internal costing document.
+
+Include:
+
+- Material cost.
+- Labor cost.
+- Other direct costs.
+- Total estimated cost.
+- Material GP.
+- Labor GP.
+- Total gross profit.
+- Gross profit margin.
+- Selling price.
+- VAT.
+- Discount.
+- Final quotation amount.
+- Relevant assumptions and overrides.
+
+Restrict this report to authorized internal users.
+
+## 12.3 Other exports
+
+Support:
+
+- Client quotation PDF.
+- Internal costing PDF.
+- Excel export.
+- CSV export where appropriate.
+- Print preview.
+
+The Excel export is a reporting/export feature only.
+
+The CBMS database and backend calculation engine remain authoritative.
+
+---
+
+# 13. QUOTATION TERMS, PAYMENT, AND WARRANTY
+
+Reproduce the terms and conditions from the workbook as editable templates.
+
+The example workbook includes:
+
+- Mobilization terms.
+- Delivery and implementation terms.
+- Warranty period.
+- Payment terms.
+- Payee information.
+- Quotation validity.
+- Scope inclusions.
+- Scope exclusions.
+- Client considerations.
+
+The example quotation uses:
+
+- 50% Down Payment.
+- 50% Progress Billing.
+- 12-month warranty wording.
+- One-month quotation validity.
+
+These are initial reference values from the workbook, not mandatory values for every quotation.
+
+Allow authorized users to configure:
+
+- Payment terms.
+- Down payment percentage.
+- Progress billing milestones.
+- Retention, if applicable.
+- Warranty period.
+- Validity period.
+- Mobilization terms.
+- Delivery terms.
+- Scope inclusions.
+- Scope exclusions.
+- Client considerations.
+- Additional conditions.
+- Payee information.
+
+Support reusable terms and conditions templates.
+
+Store the exact terms used in each issued quotation.
+
+Changes to the default templates must not alter historical quotations.
+
+---
+
+# 14. APPROVAL WORKFLOW AND COMMERCIAL CONTROLS
+
+Create a configurable approval workflow.
+
+Suggested workflow:
+
+Estimator / Project Engineer → Project Manager → Finance / Commercial Review → Management Approval → Client Issuance.
+
+The exact approval stages must be configurable.
+
+## 14.1 Approval functions
+
+Authorized reviewers must be able to:
+
+- View quotation details.
+- View internal costing where permitted.
+- Review gross profit.
+- Review discount.
+- Add comments.
+- Request corrections.
+- Approve.
+- Reject.
+- Return for revision.
+
+Record:
+
+- Reviewer.
+- Decision.
+- Date and time.
+- Remarks.
+- Previous status.
+- New status.
+
+## 14.2 Separation of duties
+
+Where company policy requires it, prevent the quotation preparer from approving their own quotation.
+
+Allow exceptions only through explicitly authorized permissions.
+
+Record any exception in the audit trail.
+
+## 14.3 Approval thresholds
+
+Provide configurable thresholds for:
+
+- Discount percentage.
+- Gross profit margin.
+- Quotation amount.
+- Manual price overrides.
+- Special cost adjustments.
+
+If a quotation falls outside configured limits, require the appropriate approval.
+
+Do not silently allow an unauthorized user to bypass the approval process.
+
+---
+
+# 15. QUOTATION REVISION MANAGEMENT
+
+Every issued or approved quotation must be preserved.
+
+Never overwrite a previously issued quotation.
+
+When a quotation needs modification, create a new revision.
+
+For example:
+
+- RCC26-1998067-CONS REV00.
+- RCC26-1998067-CONS REV01.
+- RCC26-1998067-CONS REV02.
+
+Each revision must preserve its own:
+
+- Item breakdown.
+- Material costs.
+- Labor costs.
+- GP percentages.
+- Selling rates.
+- VAT.
+- Discount.
+- Total amount.
+- Scope.
+- Payment terms.
+- Warranty.
+- Validity.
+- Approval history.
+- Issuance history.
+
+## 15.1 Revision comparison
+
+Provide a comparison between revisions showing changes to:
+
+- Items added.
+- Items removed.
+- Descriptions.
+- Quantities.
+- Units.
+- Material costs.
+- Labor costs.
+- GP percentages.
+- Selling rates.
+- Scope.
+- General Requirements.
+- VAT.
+- Discount.
+- Total amount.
+- Project duration.
+- Payment terms.
+- Warranty.
+- Validity.
+
+Record the reason for each revision.
+
+Require appropriate approval before issuing a revised quotation.
+
+Previously issued versions must remain downloadable and identifiable.
+
+---
+
+# 16. QUOTATION-TO-PROJECT CONVERSION
+
+This integration is one of the most important benefits of the module.
+
+An approved and accepted quotation must be convertible into a CBMS project without unnecessary re-encoding.
+
+Maintain a permanent relationship between the quotation and the resulting project.
+
+## 16.1 Conversion eligibility
+
+Only an appropriately approved quotation that has been accepted by the client may be converted under the normal workflow.
+
+Any exception must require authorized approval and a recorded reason.
+
+## 16.2 Information transferred
+
+Carry over:
+
+- Client.
+- Project name.
+- Project location.
+- Project address.
+- Scope of work.
+- Approved contract or quoted amount.
+- Approved quotation reference.
+- Approved revision.
+- Estimated duration.
+- Estimated manpower.
+- Materials.
+- Labor.
+- Other relevant direct costs.
+- General Requirements.
+- Supporting documents.
+- Commercial terms.
+
+The project must identify:
+
+- Original quotation.
+- Accepted quotation revision.
+- Accepted amount.
+- Approved scope.
+- Conversion date.
+- Converted by.
+- Approval history.
+
+Do not duplicate the original quotation history.
+
+## 16.3 Initial project budget
+
+Provide an option to initialize a project budget using the approved quotation's cost breakdown.
+
+Suggested mapping:
+
+| Quotation data | CBMS project data |
+|---|---|
+| Material costs | Material budget allocation |
+| Labor costs | Labor budget allocation |
+| Equipment costs | Equipment budget allocation |
+| Subcontractor costs | Subcontractor budget allocation |
+| Other direct costs | Appropriate project budget category |
+| Approved contract amount | Project contract value reference |
+
+The quotation's selling price is not automatically the actual project expenditure.
+
+The quotation's estimated costs are not automatically actual expenses.
+
+Require an authorized user to review and approve the initial project budget.
+
+Preserve the original quotation values independently from subsequent project budget changes.
+
+## 16.4 Procurement integration
+
+Allow authorized users to use approved quotation item breakdowns as references for procurement planning.
+
+Do not automatically create purchase requests or purchase orders merely because a quotation is converted.
+
+Provide a controlled process to select relevant materials or services and generate procurement planning records.
+
+Prevent duplicate procurement entries.
+
+## 16.5 Schedule integration
+
+Allow estimated project duration and relevant work breakdown information to be used as references for preparing the project schedule.
+
+Do not automatically create an approved schedule without review.
+
+The Project Manager or authorized engineer must review and approve the actual project timeline.
+
+---
+
+# 17. QUOTATION DASHBOARD AND REPORTING
+
+Create a quotation dashboard integrated with the CBMS executive dashboard.
+
+Display:
+
+- Total quotations.
+- Draft quotations.
+- Quotations for review.
+- Quotations awaiting approval.
+- Approved quotations.
+- Quotations sent to clients.
+- Accepted quotations.
+- Declined quotations.
+- Expired quotations.
+- Total quotation value.
+- Total accepted quotation value.
+- Conversion rate.
+- Average quotation value.
+
+Provide filters by:
+
+- Date.
+- Client.
+- Project.
+- Preparer.
+- Approver.
+- Status.
+- Revision.
+- Amount range.
+
+Provide reports for:
+
+- Quotation history.
+- Quotation approval status.
+- Quotation value by month.
+- Accepted versus declined quotations.
+- Quotation conversion into projects.
+- Estimated cost versus selling price.
+- Gross profit.
+- Gross profit margin.
+- Material and labor breakdown.
+- Discount history.
+- Pricing overrides.
+
+Internal financial reports must be restricted to authorized roles.
+
+All figures must be generated from actual database records.
+
+---
+
+# 18. DATABASE AND DATA INTEGRITY
+
+Use the existing CBMS database architecture.
+
+Create quotation-specific tables and relationships as needed.
+
+Suggested entities include:
+
+- quotations.
+- quotation_revisions.
+- quotation_sections.
+- quotation_items.
+- quotation_item_costs.
+- quotation_item_prices.
+- quotation_scope_options.
+- quotation_general_requirements.
+- quotation_terms.
+- quotation_approvals.
+- quotation_comments.
+- quotation_attachments.
+- quotation_calculation_snapshots.
+- quotation_item_catalog.
+- quotation_item_price_history.
+- quotation_units.
+- quotation_categories.
+- quotation_templates.
+- quotation_number_sequences.
+- quotation_conversion_history.
+
+The final schema must follow the existing CBMS architecture.
+
+Reuse central references for:
+
+- Users.
+- Personnel.
+- Clients.
+- Suppliers.
+- Projects.
+- Documents.
+- Notifications.
+- Audit records.
+- Financial records.
+
+## 18.1 Calculation snapshots
+
+For every quotation revision, preserve a calculation snapshot containing the inputs and calculation rules used at the time.
+
+This must include:
+
+- Quantity.
+- Unit.
+- Material cost.
+- Labor cost.
+- Material GP.
+- Labor GP.
+- Selling rates.
+- Extended amounts.
+- Section subtotals.
+- VAT rate.
+- Discount.
+- Final amount.
+- Relevant scope and duration settings.
+
+The purpose is to ensure that an old quotation remains reproducible even after the item catalog, pricing settings, VAT configuration, or default terms change.
+
+## 18.2 Transactions
+
+Use database transactions for:
+
+- Quotation creation.
+- Revision creation.
+- Approval.
+- Issuance.
+- Project conversion.
+- Financial budget initialization.
+
+Prevent partial or inconsistent records.
+
+Use appropriate unique constraints and indexes.
+
+---
+
+# 19. AUDIT TRAIL AND SECURITY
+
+Record important quotation activities.
+
+Audit:
+
+- Quotation creation.
+- Item additions.
+- Item deletion.
+- Item changes.
+- Quantity changes.
+- Material cost changes.
+- Labor cost changes.
+- GP changes.
+- Selling rate changes.
+- Manual overrides.
+- Scope changes.
+- General Requirements changes.
+- VAT changes.
+- Discount changes.
+- Approval decisions.
+- Issuance.
+- Revision creation.
+- Client acceptance.
+- Project conversion.
+
+Each record should include:
+
+- User.
+- Action.
+- Module.
+- Quotation reference.
+- Revision.
+- Affected record.
+- Previous value.
+- New value.
+- Date and time.
+- Remarks where applicable.
+
+Ordinary users must not be able to modify or delete audit records.
+
+## 19.1 Security requirements
+
+Use the existing CBMS security architecture.
+
+Implement:
+
+- Server-side role and permission checks.
+- Project-level permissions.
+- CSRF protection.
+- SQL injection prevention.
+- XSS protection.
+- Input validation.
+- Secure file access.
+- Session protection.
+- Restricted API responses.
+- Secure environment configuration.
+
+Protect internal costing and profit data.
+
+Never rely on frontend hiding as a security mechanism.
+
+Test unauthorized API access directly.
+
+---
+
+# 20. EXCEL WORKBOOK VALIDATION — MANDATORY ACCEPTANCE GATE
+
+The original workbook must remain the primary test reference for the quotation module.
+
+The application must not be declared calculation-ready merely because the calculations look reasonable.
+
+## 20.1 Create a controlled test dataset
+
+Use the uploaded workbook's existing quotation as a reference test case.
+
+Create additional controlled test cases for:
+
+- General Requirements.
+- General Items.
+- Architectural items.
+- Material-only items.
+- Labor-only items.
+- Combined material and labor items.
+- Different GP percentages.
+- Different quantities.
+- Different units.
+- Included items.
+- Hidden items.
+- Special text entries.
+- Manual price overrides.
+- Optional scope settings.
+- Project duration.
+- Manpower.
+- Location and mobilization.
+- Section subtotals.
+- VAT.
+- Discount.
+- Final quotation amount.
+
+Do not expose the real workbook's employee contact details or confidential information in public test data.
+
+## 20.2 Side-by-side calculation validation
+
+For each controlled test case, compare:
+
+1. Excel input values.
+2. Excel material unit cost.
+3. Excel labor unit cost.
+4. Excel material GP.
+5. Excel labor GP.
+6. Excel material selling rate.
+7. Excel labor selling rate.
+8. Excel combined unit rate.
+9. Excel extended selling amount.
+10. Excel material and labor extended costs.
+11. Excel total direct cost.
+12. Excel section subtotals.
+13. Excel total selling price before VAT.
+14. Excel VAT.
+15. Excel discount.
+16. Excel final quotation amount.
+
+Run the same test cases in the CBMS.
+
+Generate a calculation reconciliation report.
+
+The report must identify:
+
+- Matching results.
+- Differences.
+- Difference amounts.
+- Difference percentages.
+- Relevant formulas.
+- Suspected causes.
+- Resolution status.
+
+Investigate every material discrepancy.
+
+Do not silently accept a different calculation because it appears commercially reasonable.
+
+## 20.3 Workbook limitations
+
+If the original workbook produces an incorrect result because of a broken reference or legacy formula, do not automatically treat that result as a correct business rule.
+
+Document the issue.
+
+Distinguish:
+
+- Formula faithfully reproduced.
+- Formula corrected with validated business approval.
+- Formula requiring clarification.
+- Formula not used.
+
+Do not change the company's commercial pricing methodology without explicit authorization.
+
+## 20.4 Calculation acceptance
+
+The calculation engine cannot be marked complete until:
+
+- Important formulas have been identified.
+- Calculation rules are documented.
+- Test cases have been created.
+- Results have been compared.
+- Differences have been resolved or formally documented.
+- Authorized business validation has been obtained.
+
+---
+
+# 21. REPLACE VBA WITH NATIVE CBMS FUNCTIONALITY
+
+The uploaded workbook contains VBA automation and user forms.
+
+Investigate the existing VBA behavior.
+
+The VBA project includes procedures and controls associated with:
+
+- Saving values.
+- Printing values.
+- Resetting the quotation.
+- Clearing initial lists.
+- Selecting preparers and managers.
+- Updating hidden configuration values.
+- Managing quotation options.
+- Adding quotation rows.
+- Adding quotation tables.
+- Copying templates.
+- Managing row visibility.
+- Managing quotation numbering.
+- Updating quotation information.
+
+Recreate the required functionality natively in React and PHP.
+
+Do not require Excel or Microsoft Office automation on the production server.
+
+Do not attempt to run the original VBA code in the browser.
+
+The equivalent web application features must be tested independently.
+
+---
+
+# 22. USER ROLES AND PERMISSIONS
+
+Integrate with the existing CBMS role and permission framework.
+
+Suggested roles:
+
+**Quotation Administrator**
+- Manage settings.
+- Manage numbering.
+- Manage templates.
+- Manage item catalog.
+- Manage pricing rules.
+- Manage GP defaults.
+- Manage VAT configuration.
+- Manage approval workflows.
+
+**Estimator / Project Engineer**
+- Create quotations.
+- Edit drafts.
+- Add items.
+- Enter material and labor costs.
+- Submit for review.
+- View permitted cost information.
+
+**Project Manager**
+- Review quotations.
+- Add comments.
+- Request corrections.
+- Approve where authorized.
+
+**Finance / Commercial**
+- Review direct costs.
+- Review pricing.
+- Review discounts.
+- Review GP.
+- Validate financial calculations.
+
+**Management**
+- Approve quotations.
+- Approve special discounts.
+- Approve exceptional overrides.
+- View commercial reports.
+
+Permissions must be independently configurable.
+
+Do not assume that all Project Managers, Finance Officers, or Administrators automatically have access to every confidential quotation field.
+
+---
+
+# 23. GO DADDY CPANEL COMPATIBILITY
+
+The quotation module must comply with the existing CBMS deployment requirements.
+
+Use:
+
+- PHP 8.3-compatible backend code.
+- MySQL or MariaDB.
+- Compiled React frontend.
+- REST API.
+- Existing authentication.
+- Existing CBMS database.
+- Existing file storage.
+- Existing permission system.
+
+Do not require:
+
+- Microsoft Excel installed on the server.
+- Microsoft Office automation.
+- A continuously running Node.js process.
+- Docker.
+- Redis.
+- A separate quotation server.
+- Mandatory paid cloud services.
+
+Use PHP-compatible spreadsheet libraries only when needed for Excel import/export.
+
+Use a server-compatible PDF generation solution.
+
+Perform all financial calculations natively on the backend.
+
+Bundle essential frontend resources locally.
+
+The module must remain portable to future VPS, dedicated hosting, and self-hosted infrastructure.
+
+---
+
+# 24. IMPLEMENTATION PHASES
+
+Develop the module in controlled phases.
+
+Do not generate the entire module as an unstructured code dump.
+
+Maintain one coherent architecture throughout implementation.
+
+## Phase 1 — Workbook reverse engineering
+
+Deliver:
+
+- Workbook analysis.
+- Formula inventory.
+- VBA inventory.
+- Named range map.
+- Input/output map.
+- Calculation documentation.
+- Pricing methodology.
+- Scope configuration documentation.
+- General Requirements documentation.
+- Location and manpower calculation documentation.
+- Identified errors and unresolved issues.
+- Controlled test cases.
+
+**Do not finalize the calculation engine before this phase is reviewed.**
+
+## Phase 2 — Module and database foundation
+
+Implement:
+
+- Module structure.
+- Database migrations.
+- Quotation numbering.
+- Client integration.
+- Personnel integration.
+- Role and permission controls.
+- Item database.
+- Material price history.
+- Labor rate history.
+- General Requirements library.
+- Quotation settings.
+
+## Phase 3 — Calculation engine
+
+Implement:
+
+- Material cost calculation.
+- Labor cost calculation.
+- GP calculations.
+- Selling rates.
+- Rounding rules.
+- Quantity calculations.
+- Section subtotals.
+- Total direct cost.
+- Total selling price.
+- VAT.
+- Special discount.
+- Final quotation amount.
+- Calculation snapshots.
+
+Validate each calculation against the original workbook.
+
+## Phase 4 — Quotation editor
+
+Implement:
+
+- Quotation creation.
+- Client information.
+- Project information.
+- Scope configuration.
+- General Requirements.
+- Item sections.
+- Dynamic rows.
+- Item selection.
+- Material and labor inputs.
+- Inline editing.
+- Calculation transparency.
+- Autosave.
+- Draft management.
+
+## Phase 5 — Commercial documents and approvals
+
+Implement:
+
+- Client quotation preview.
+- Client-facing PDF.
+- Internal costing report.
+- Excel export.
+- Approval workflow.
+- Discount approval.
+- Revision management.
+- Audit trail.
+
+## Phase 6 — CBMS integration
+
+Implement:
+
+- Quotation-to-project conversion.
+- Initial project budget mapping.
+- Procurement planning references.
+- Schedule references.
+- Document integration.
+- Notifications.
+- Management reports.
+
+## Phase 7 — Testing and production deployment
+
+Complete:
+
+- Formula reconciliation.
+- Calculation testing.
+- Permission testing.
+- API security testing.
+- PDF testing.
+- Revision testing.
+- Project conversion testing.
+- Financial integration testing.
+- cPanel compatibility testing.
+- Backup and restoration testing.
+- Documentation.
+
+---
+
+# 25. REQUIRED TESTING
+
+Test all major functions.
+
+### Quotation calculations
+- Material selling rate.
+- Labor selling rate.
+- Combined selling rate.
+- Gross profit.
+- Quantity extension.
+- Section subtotals.
+- Total direct cost.
+- VAT.
+- Discount.
+- Final quotation amount.
+
+### Quotation management
+- Create quotation.
+- Save draft.
+- Edit draft.
+- Add items.
+- Delete draft items.
+- Add sections.
+- Reorder sections.
+- Apply scope options.
+- Create revision.
+- Compare revisions.
+- Approve quotation.
+- Reject quotation.
+- Issue quotation.
+- Record client acceptance.
+
+### Confidentiality
+- Unauthorized users cannot view material costs.
+- Unauthorized users cannot view labor costs.
+- Unauthorized users cannot view supplier pricing.
+- Unauthorized users cannot view GP or margin.
+- Client PDFs do not contain internal costs.
+- Client-facing API responses do not contain confidential data.
+- Client accounts cannot access internal quotation records.
+
+### Project integration
+- Accepted quotations can be converted.
+- Client details transfer correctly.
+- Project information transfers correctly.
+- Approved cost breakdown transfers correctly.
+- Project budget requires appropriate approval.
+- Original quotation remains preserved.
+- Project remains linked to the correct quotation revision.
+
+### Production deployment
+- Application works on target cPanel hosting.
+- Compiled frontend works.
+- PHP API works.
+- Database migrations work.
+- PDF generation works.
+- File permissions work.
+- No Excel installation is required.
+- No continuously running Node.js process is required.
+
+---
+
+# 26. REQUIRED DOCUMENTATION AND DELIVERABLES
+
+Provide:
+
+1. Workbook analysis report.
+2. Calculation specification.
+3. Module architecture.
+4. Database schema.
+5. Database migrations.
+6. Working quotation module source code.
+7. Calculation engine documentation.
+8. Item database documentation.
+9. Approval workflow documentation.
+10. Quotation PDF templates.
+11. Internal costing report template.
+12. Quotation-to-project integration documentation.
+13. Permission matrix.
+14. Test cases.
+15. Calculation reconciliation report.
+16. GoDaddy cPanel installation instructions.
+17. User guide.
+18. Administrator guide.
+19. Developer guide.
+20. Known limitations and unresolved issues.
+
+Provide a module completion checklist showing:
+
+- Feature.
+- Implementation status.
+- Database status.
+- Permission status.
+- Test status.
+- Known limitations.
+
+Do not claim that an untested feature is complete.
+
+---
+
+# 27. FINAL NON-NEGOTIABLE DEVELOPMENT RULES
+
+1. The original REV1 Excel workbook is the primary reference for existing quotation logic.
+2. Do not replace the company's established formulas with generic construction estimating formulas.
+3. Preserve the gross profit margin calculation method.
+4. Do not confuse gross profit margin with markup.
+5. Preserve the material and labor cost separation.
+6. Preserve the internal cost and client selling-price separation.
+7. Preserve the workbook's validated rounding methodology.
+8. Reproduce the VAT and discount calculation sequence accurately.
+9. Investigate all important hidden configuration values.
+10. Do not invent missing formulas.
+11. Do not silently reproduce broken workbook references.
+12. Do not expose internal costs, supplier pricing, GP, or profit in client-facing documents.
+13. Never alter an issued quotation without creating a new revision.
+14. Preserve historical quotation calculations.
+15. Do not allow unauthorized discount or pricing overrides.
+16. Do not automatically convert unapproved quotations into projects.
+17. Do not automatically turn quotation costs into actual project expenses.
+18. Do not create duplicate procurement records during project conversion.
+19. Integrate with existing CBMS modules rather than building disconnected databases.
+20. Enforce all permissions on the backend.
+21. Keep the module compatible with GoDaddy cPanel shared hosting.
+22. Do not require Microsoft Excel or Excel VBA on the production server.
+23. Keep the module portable to future hosting environments.
+24. Validate important calculations against the original workbook.
+25. Provide documentation and test evidence before declaring completion.
+
+---
+
+# 28. FINAL INSTRUCTION TO THE AI BUILDER
+
+You are developing a critical commercial module for REV1 Construction Corp.
+
+The objective is not simply to reproduce the appearance of an Excel quotation form.
+
+The objective is to transform the company's existing quotation and estimating process into a professional, reliable, secure, and fully integrated commercial management module.
+
+The original workbook must be carefully studied and its valid calculation logic preserved.
+
+The system must provide two distinct but connected capabilities:
+
+**INTERNAL COMMERCIAL CONTROL**
+
+Authorized engineers, estimators, finance personnel, and management must be able to prepare and inspect the complete cost breakdown, material and labor costs, pricing assumptions, gross profit, discounts, and approvals.
+
+**CLIENT-FACING QUOTATION**
+
+The company must be able to generate a clean, professional quotation containing only approved commercial information, without exposing confidential internal costing or profit data.
+
+The accepted quotation must become a reliable starting point for project execution within CBMS, carrying the approved scope, contract amount, cost breakdown, project information, and supporting documents into the Project Management module.
+
+The module must preserve historical quotation records, maintain complete revision and approval histories, and provide auditable calculations.
+
+**Do not sacrifice calculation accuracy for development speed. Do not sacrifice commercial confidentiality for convenience. Do not sacrifice data integrity for visual appearance.**
+
+First analyze the workbook. Then document the calculation logic. Then build the calculation engine. Then build the quotation interface and workflows. Finally, validate the results against the original workbook and integrate the completed module with CBMS.
+
+**FINAL SUCCESS CRITERION: REV1 personnel must be able to prepare, calculate, review, approve, issue, revise, and convert a construction quotation entirely within CBMS, with results that match the validated existing Excel quotation methodology and with internal costing securely separated from client-facing documents.**

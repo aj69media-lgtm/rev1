@@ -1,6 +1,7 @@
 import { hashPassword } from './auth.ts';
 import { computeCriticalPath, syncProjectProgressFromSchedule } from './calculations.ts';
 import { db, transaction } from './db.ts';
+import { ensureQuotationReferenceData } from './quotationSeed.ts';
 
 export function seedSampleWorkspace(adminUserId: number, staffTestPassword?: string): void {
   const existingProjects = db.prepare('SELECT COUNT(*) AS cnt FROM projects').get() as { cnt: number };
@@ -612,4 +613,7 @@ export function seedSampleWorkspace(adminUserId: number, staffTestPassword?: str
        VALUES ('QT-2026-012', ?, 'Meridian Phase II Parking Deck Expansion', '425 Market Street West Lot', '3-level precast parking structure — awaiting company Excel estimating workbook formula import.', ?, 'draft', 'Placeholder structure ready for workbook calculation integration.', ?)`
     ).run(client1Id, isoOffset(30), pmId);
   });
+
+  // Seed REV1 Quotation reference catalog, PH locations, settings, and Likha ni Inay Cebu reference workbook
+  ensureQuotationReferenceData();
 }

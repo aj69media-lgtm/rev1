@@ -10,6 +10,7 @@ import authRoutes from './server/routes/authRoutes.ts';
 import clientPortalRoutes from './server/routes/clientPortalRoutes.ts';
 import financeResourceRoutes from './server/routes/financeResourceRoutes.ts';
 import projectRoutes from './server/routes/projectRoutes.ts';
+import quotationRoutes from './server/routes/quotationRoutes.ts';
 
 async function startServer() {
   runMigrations();
@@ -30,6 +31,7 @@ async function startServer() {
   app.use('/api/admin', adminRoutes);
   app.use('/api/client-portal', clientPortalRoutes);
   app.use('/api', projectRoutes);
+  app.use('/api', quotationRoutes);
   app.use('/api', financeResourceRoutes);
 
   // API 404 handler

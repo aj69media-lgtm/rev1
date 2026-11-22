@@ -1,21 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowUpRight, MapPin, Plus, X } from 'lucide-react';
+import { ArrowUpRight, Building2, Mail, MapPin, Phone, Plus, User, X } from 'lucide-react';
 import { StatusLabel } from '../components/Charts';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { apiRequest, formatCurrency } from '../lib/api';
 
-export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }> = ({ onOpenProject }) => {
+export const ProjectsListView: React.FC<{
+  onOpenProject: (id: number) => void;
+  onOpenAdminClients?: () => void;
+}> = ({ onOpenProject, onOpenAdminClients }) => {
   const { hasPerm } = useAuth();
   const { fetchWithCache, syncVersion } = useSync();
   const [projects, setProjects] = useState<any[]>([]);
   const [clients, setClients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [loadingRef, setLoadingRef] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
   const [form, setForm] = useState({
-    refNumber: `PRJ-2026-${Math.floor(100 + Math.random() * 899)}`,
+    refNumber: '',
     name: '',
     clientId: '',
     location: '',
@@ -50,14 +55,44 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
     load();
   }, [syncVersion]);
 
+  const openCreateModal = async () => {
+    setError('');
+    setShowCreate(true);
+    setLoadingRef(true);
+    try {
+      const [refRes, clientRes] = await Promise.all([
+        apiRequest<{ refNumber: string }>('/api/projects/next-ref').catch(() => ({ refNumber: '' })),
+        apiRequest<{ clients: any[] }>('/api/admin/clients').catch(() => ({ clients: [] })),
+      ]);
+      const freshClients = clientRes.clients || [];
+      if (freshClients.length > 0) setClients(freshClients);
+      setForm((prev) => ({
+        ...prev,
+        refNumber: refRes.refNumber || prev.refNumber || 'Auto-assigned on save',
+        clientId:
+          prev.clientId && freshClients.some((c) => String(c.id) === prev.clientId)
+            ? prev.clientId
+            : freshClients[0]
+            ? String(freshClients[0].id)
+            : '',
+      }));
+    } finally {
+      setLoadingRef(false);
+    }
+  };
+
+  const selectedClient = clients.find((c) => String(c.id) === String(form.clientId)) || null;
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSubmitting(true);
     try {
-      const res = await apiRequest<{ id: number }>('/api/projects', {
+      const res = await apiRequest<{ id: number; refNumber?: string }>('/api/projects', {
         method: 'POST',
         body: {
           ...form,
+          refNumber: 'AUTO',
           clientId: Number(form.clientId),
           contractAmount: Number(form.contractAmount || 0),
           approvedBudget: Number(form.approvedBudget || 0),
@@ -67,6 +102,8 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
       onOpenProject(res.id);
     } catch (err: any) {
       setError(err?.message || 'Unable to create project');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -82,7 +119,7 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
         {hasPerm('projects', 'create') && (
           <button
             type="button"
-            onClick={() => setShowCreate(true)}
+            onClick={openCreateModal}
             className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800"
           >
             <Plus className="h-4 w-4" />
@@ -166,11 +203,16 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
               </div>
 
               <div className="border-t border-slate-100 px-4 py-3 bg-slate-50/60 flex items-center justify-between text-xs">
-                <span className="text-slate-500 truncate">{p.client_name}</span>
+                <div className="min-w-0 pr-2">
+                  <div className="text-slate-700 font-medium truncate">{p.client_name}</div>
+                  {p.client_representative && (
+                    <div className="text-[11px] text-slate-500 truncate">Rep: {p.client_representative}</div>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => onOpenProject(p.id)}
-                  className="inline-flex items-center gap-1 font-semibold text-slate-900 hover:text-amber-700 whitespace-nowrap"
+                  className="inline-flex items-center gap-1 font-semibold text-slate-900 hover:text-amber-700 whitespace-nowrap shrink-0"
                 >
                   Open Workspace
                   <ArrowUpRight className="h-3.5 w-3.5" />
@@ -182,8 +224,8 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
       )}
 
       {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
-          <div className="w-full max-w-xl rounded-xl border border-slate-200 bg-white shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-2xl my-auto">
             <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
               <h2 className="font-display text-base font-semibold text-slate-900">Create Construction Project</h2>
               <button type="button" onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-slate-700">
@@ -191,18 +233,35 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
               </button>
             </div>
             <form onSubmit={handleCreate} className="p-6 space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block font-medium text-slate-700 mb-1">Reference Number *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-medium text-slate-700">Reference Number</label>
+                    <span className="text-[11px] font-medium text-emerald-700">Auto-generated</span>
+                  </div>
                   <input
-                    required
-                    value={form.refNumber}
-                    onChange={(e) => setForm({ ...form, refNumber: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono"
+                    readOnly
+                    value={loadingRef ? 'Generating...' : form.refNumber || 'PRJ-AUTO'}
+                    aria-readonly="true"
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-slate-700 cursor-default focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="block font-medium text-slate-700 mb-1">Client *</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-medium text-slate-700">Client *</label>
+                    {onOpenAdminClients && hasPerm('admin', 'view') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCreate(false);
+                          onOpenAdminClients();
+                        }}
+                        className="text-[11px] font-medium text-amber-700 hover:text-amber-800 hover:underline"
+                      >
+                        Manage Clients in Admin
+                      </button>
+                    )}
+                  </div>
                   <select
                     required
                     value={form.clientId}
@@ -212,12 +271,63 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
                     <option value="">Select client...</option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.company_name}
+                        {c.company_name} — Rep: {c.primary_contact}
                       </option>
                     ))}
                   </select>
                 </div>
               </div>
+
+              {selectedClient && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-slate-900">
+                      <Building2 className="h-3.5 w-3.5 text-slate-500" />
+                      {selectedClient.company_name}
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      {selectedClient.project_count ?? 0} existing project(s)
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 text-[11px] text-slate-700">
+                    <div className="flex items-start gap-1.5">
+                      <User className="h-3.5 w-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-slate-500">Client Representative: </span>
+                        <span className="font-medium text-slate-900">{selectedClient.primary_contact}</span>
+                        {selectedClient.representative_title && (
+                          <span className="text-slate-500"> ({selectedClient.representative_title})</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-1.5">
+                      <Phone className="h-3.5 w-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-slate-500">Phone: </span>
+                        <span className="font-mono text-slate-900">{selectedClient.phone || 'Not specified'}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-1.5">
+                      <Mail className="h-3.5 w-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <div className="truncate">
+                        <span className="text-slate-500">Email: </span>
+                        <span className="text-slate-900">{selectedClient.email}</span>
+                        {selectedClient.secondary_contact && (
+                          <span className="block text-slate-500">Alt: {selectedClient.secondary_contact}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-1.5">
+                      <MapPin className="h-3.5 w-3.5 text-slate-400 shrink-0 mt-0.5" />
+                      <div>
+                        <span className="text-slate-500">Address: </span>
+                        <span className="text-slate-900">{selectedClient.address || 'No address on file'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block font-medium text-slate-700 mb-1">Project Name *</label>
                 <input
@@ -299,9 +409,10 @@ export const ProjectsListView: React.FC<{ onOpenProject: (id: number) => void }>
                 </button>
                 <button
                   type="submit"
-                  className="rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white hover:bg-slate-800"
+                  disabled={submitting}
+                  className="rounded-lg bg-slate-900 px-4 py-2 font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
-                  Create Project
+                  {submitting ? 'Creating...' : 'Create Project'}
                 </button>
               </div>
             </form>

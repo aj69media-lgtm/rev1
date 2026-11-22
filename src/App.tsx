@@ -21,12 +21,14 @@ import {
 } from './pages/GlobalOperationsViews';
 import { ProjectWorkspaceView } from './pages/ProjectWorkspaceView';
 import { ProjectsListView } from './pages/ProjectsListView';
+import { QuotationsModuleView } from './pages/QuotationsModuleView';
 import { ReportsView } from './pages/ReportsView';
 
 const RootRouter: React.FC = () => {
   const { user, loading, hasPerm } = useAuth();
   const [section, setSection] = useState<NavSection>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [adminTab, setAdminTab] = useState<'users' | 'clients' | 'roles' | 'modules' | 'audit' | 'maintenance'>('users');
   const [clientPortalMode, setClientPortalMode] = useState<boolean>(
     () => typeof window !== 'undefined' && window.location.pathname.startsWith('/client-portal')
   );
@@ -121,7 +123,16 @@ const RootRouter: React.FC = () => {
       case 'dashboard':
         return <ExecutiveDashboard onOpenProject={handleOpenProject} onNavigate={handleNavigate} />;
       case 'projects':
-        return <ProjectsListView onOpenProject={handleOpenProject} />;
+        return (
+          <ProjectsListView
+            onOpenProject={handleOpenProject}
+            onOpenAdminClients={() => {
+              setSelectedProjectId(null);
+              setAdminTab('clients');
+              setSection('admin');
+            }}
+          />
+        );
       case 'tasks':
         return <TasksGlobalView />;
       case 'procurement':
@@ -135,9 +146,9 @@ const RootRouter: React.FC = () => {
       case 'reports':
         return <ReportsView />;
       case 'quotations':
-        return <RevisionsAndQuotesView mode="quotations" />;
+        return <QuotationsModuleView onOpenProject={handleOpenProject} />;
       case 'admin':
-        return <AdminConsoleView />;
+        return <AdminConsoleView initialTab={adminTab} />;
       default:
         return <ExecutiveDashboard onOpenProject={handleOpenProject} onNavigate={handleNavigate} />;
     }
@@ -148,7 +159,10 @@ const RootRouter: React.FC = () => {
       <AppShell
         activeSection={section}
         selectedProjectId={selectedProjectId}
-        onSelectSection={(next) => setSection(next)}
+        onSelectSection={(next) => {
+          if (next === 'admin') setAdminTab('users');
+          setSection(next);
+        }}
         onClearProject={() => setSelectedProjectId(null)}
         onOpenClientPortal={() => setClientPortalMode(true)}
       >

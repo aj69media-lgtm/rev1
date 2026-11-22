@@ -275,6 +275,35 @@ router.get('/dashboard/executive', requirePermission('projects', 'view'), (req: 
 });
 
 // --- Projects CRUD ---
+function generateNextProjectRef(): string {
+  const year = new Date().getFullYear();
+  const prefix = `PRJ-${year}-`;
+  const rows = db
+    .prepare('SELECT ref_number FROM projects WHERE ref_number LIKE ?')
+    .all(`${prefix}%`) as Array<{ ref_number: string }>;
+
+  let maxSeq = 0;
+  for (const r of rows) {
+    const match = new RegExp(`^PRJ-${year}-(\\d+)$`).exec(r.ref_number);
+    if (match) {
+      const n = Number(match[1]);
+      if (Number.isFinite(n) && n > maxSeq) maxSeq = n;
+    }
+  }
+
+  let seq = maxSeq + 1;
+  let candidate = `${prefix}${String(seq).padStart(3, '0')}`;
+  while (db.prepare('SELECT 1 FROM projects WHERE ref_number = ?').get(candidate)) {
+    seq += 1;
+    candidate = `${prefix}${String(seq).padStart(3, '0')}`;
+  }
+  return candidate;
+}
+
+router.get('/projects/next-ref', requireModule('projects'), requirePermission('projects', 'create'), (_req, res) => {
+  res.json({ refNumber: generateNextProjectRef() });
+});
+
 router.get('/projects', requireModule('projects'), requirePermission('projects', 'view'), (req: AuthenticatedRequest, res) => {
   const access = getAccessibleProjectIds(req.user!);
   const filterSql =
@@ -287,7 +316,9 @@ router.get('/projects', requireModule('projects'), requirePermission('projects',
 
   const projects = db
     .prepare(
-      `SELECT p.*, c.company_name AS client_name, u.full_name AS pm_name
+      `SELECT p.*, c.company_name AS client_name, c.primary_contact AS client_representative,
+              c.representative_title AS client_rep_title, c.email AS client_email,
+              c.phone AS client_phone, c.address AS client_address, u.full_name AS pm_name
        FROM projects p
        JOIN clients c ON c.id = p.client_id
        LEFT JOIN users u ON u.id = p.project_manager_id
@@ -307,18 +338,50 @@ router.get('/projects', requireModule('projects'), requirePermission('projects',
 
 router.post('/projects', requireModule('projects'), requirePermission('projects', 'create'), (req: AuthenticatedRequest, res) => {
   const b = req.body || {};
-  if (!b.refNumber || !b.name || !b.clientId || !b.location || !b.startDate || !b.originalEndDate) {
-    res.status(400).json({ error: 'Reference number, name, client, location, start date, and expected completion date are required' });
+  if (!b.name || !b.clientId || !b.location || !b.startDate || !b.originalEndDate) {
+    res.status(400).json({ error: 'Project name, client, location, start date, and expected completion date are required' });
     return;
   }
 
-  const exists = db.prepare('SELECT id FROM projects WHERE ref_number = ?').get(String(b.refNumber).trim());
-  if (exists) {
-    res.status(409).json({ error: 'Project reference number already exists' });
+  const clientRow = db
+    .prepare(
+      'SELECT id, company_name, primary_contact, representative_title, email, phone, address FROM clients WHERE id = ?'
+    )
+    .get(Number(b.clientId)) as
+    | {
+        id: number;
+        company_name: string;
+        primary_contact: string;
+        representative_title: string;
+        email: string;
+        phone: string;
+        address: string;
+      }
+    | undefined;
+
+  if (!clientRow) {
+    res.status(400).json({ error: 'Selected client was not found' });
     return;
   }
 
-  const projectId = transaction(() => {
+  const autoClientContact = [
+    clientRow.primary_contact + (clientRow.representative_title ? ` (${clientRow.representative_title})` : ''),
+    clientRow.phone,
+    clientRow.email,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const { projectId, refNumber } = transaction(() => {
+    const requestedRef = typeof b.refNumber === 'string' ? b.refNumber.trim() : '';
+    const refTaken = requestedRef
+      ? Boolean(db.prepare('SELECT 1 FROM projects WHERE ref_number = ?').get(requestedRef))
+      : false;
+    const assignedRef =
+      !requestedRef || requestedRef.toUpperCase() === 'AUTO' || refTaken
+        ? generateNextProjectRef()
+        : requestedRef;
+
     const info = db
       .prepare(
         `INSERT INTO projects (
@@ -328,12 +391,12 @@ router.post('/projects', requireModule('projects'), requirePermission('projects'
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
-        String(b.refNumber).trim(),
+        assignedRef,
         String(b.name).trim(),
         Number(b.clientId),
-        b.clientContactInfo || '',
+        (typeof b.clientContactInfo === 'string' && b.clientContactInfo.trim()) || autoClientContact,
         String(b.location).trim(),
-        b.address || '',
+        b.address || clientRow.address || '',
         b.description || '',
         b.scope || '',
         Number(b.contractAmount || 0),
@@ -361,7 +424,7 @@ router.post('/projects', requireModule('projects'), requirePermission('projects'
         'project_manager'
       );
     }
-    return pid;
+    return { projectId: pid, refNumber: assignedRef };
   });
 
   logAudit({
@@ -370,8 +433,8 @@ router.post('/projects', requireModule('projects'), requirePermission('projects'
     action: 'CREATE_PROJECT',
     module: 'projects',
     recordType: 'project',
-    recordRef: String(b.refNumber).trim(),
-    newValue: { name: b.name, contractAmount: b.contractAmount, approvedBudget: b.approvedBudget },
+    recordRef: refNumber,
+    newValue: { refNumber, name: b.name, clientId: clientRow.id, contractAmount: b.contractAmount, approvedBudget: b.approvedBudget },
     ipAddress: req.ip || '',
   });
 
@@ -379,10 +442,10 @@ router.post('/projects', requireModule('projects'), requirePermission('projects'
     eventType: 'project:created',
     module: 'projects',
     projectId,
-    payload: { id: projectId, name: b.name },
+    payload: { id: projectId, refNumber, name: b.name },
   });
 
-  res.status(201).json({ id: projectId });
+  res.status(201).json({ id: projectId, refNumber });
 });
 
 router.get('/projects/:id', requireModule('projects'), requirePermission('projects', 'view'), (req: AuthenticatedRequest, res) => {
@@ -394,8 +457,10 @@ router.get('/projects/:id', requireModule('projects'), requirePermission('projec
 
   const project = db
     .prepare(
-      `SELECT p.*, c.company_name AS client_name, c.email AS client_email,
-              pm.full_name AS pm_name, ss.full_name AS supervisor_name
+      `SELECT p.*, c.company_name AS client_name, c.primary_contact AS client_representative,
+              c.representative_title AS client_rep_title, c.email AS client_email,
+              c.phone AS client_phone, c.secondary_contact AS client_secondary_contact,
+              c.address AS client_address, pm.full_name AS pm_name, ss.full_name AS supervisor_name
        FROM projects p
        JOIN clients c ON c.id = p.client_id
        LEFT JOIN users pm ON pm.id = p.project_manager_id
@@ -462,11 +527,18 @@ router.patch('/projects/:id', requireModule('projects'), requirePermission('proj
     `UPDATE projects SET
       name = COALESCE(?, name),
       location = COALESCE(?, location),
+      address = COALESCE(?, address),
       description = COALESCE(?, description),
       scope = COALESCE(?, scope),
+      contract_amount = COALESCE(?, contract_amount),
+      approved_budget = COALESCE(?, approved_budget),
       revised_budget = COALESCE(?, revised_budget),
+      start_date = COALESCE(?, start_date),
+      original_end_date = COALESCE(?, original_end_date),
       revised_end_date = COALESCE(?, revised_end_date),
       status = COALESCE(?, status),
+      project_manager_id = COALESCE(?, project_manager_id),
+      site_supervisor_id = COALESCE(?, site_supervisor_id),
       schedule_delay_explanation = COALESCE(?, schedule_delay_explanation),
       delay_explanation_client_visible = COALESCE(?, delay_explanation_client_visible),
       updated_at = datetime('now')
@@ -474,11 +546,18 @@ router.patch('/projects/:id', requireModule('projects'), requirePermission('proj
   ).run(
     b.name ?? null,
     b.location ?? null,
+    b.address ?? null,
     b.description ?? null,
     b.scope ?? null,
-    b.revisedBudget !== undefined ? Number(b.revisedBudget) : null,
+    b.contractAmount !== undefined && b.contractAmount !== '' ? Number(b.contractAmount) : null,
+    b.approvedBudget !== undefined && b.approvedBudget !== '' ? Number(b.approvedBudget) : null,
+    b.revisedBudget !== undefined && b.revisedBudget !== '' ? Number(b.revisedBudget) : null,
+    b.startDate ?? null,
+    b.originalEndDate ?? null,
     b.revisedEndDate ?? null,
     b.status ?? null,
+    b.projectManagerId !== undefined && b.projectManagerId !== '' ? Number(b.projectManagerId) : null,
+    b.siteSupervisorId !== undefined && b.siteSupervisorId !== '' ? Number(b.siteSupervisorId) : null,
     b.scheduleDelayExplanation ?? null,
     b.delayExplanationClientVisible !== undefined ? (b.delayExplanationClientVisible ? 1 : 0) : null,
     projectId
@@ -491,7 +570,15 @@ router.patch('/projects/:id', requireModule('projects'), requirePermission('proj
     module: 'projects',
     recordType: 'project',
     recordRef: prev.ref_number,
-    previousValue: { status: prev.status, revised_budget: prev.revised_budget, revised_end_date: prev.revised_end_date },
+    previousValue: {
+      name: prev.name,
+      status: prev.status,
+      contract_amount: prev.contract_amount,
+      approved_budget: prev.approved_budget,
+      revised_budget: prev.revised_budget,
+      start_date: prev.start_date,
+      original_end_date: prev.original_end_date,
+    },
     newValue: b,
     ipAddress: req.ip || '',
   });
@@ -1236,6 +1323,124 @@ router.post('/tasks/:id/comments', requireModule('tasks'), requirePermission('ta
     .prepare('INSERT INTO task_comments (task_id, user_id, comment) VALUES (?, ?, ?)')
     .run(taskId, req.user!.id, comment.trim());
   res.status(201).json({ id: Number(info.lastInsertRowid) });
+});
+
+// --- Project Toolbox & Site Resources ---
+router.get('/projects/:id/toolbox', requireModule('equipment'), requirePermission('equipment', 'view'), (req: AuthenticatedRequest, res) => {
+  const projectId = Number(req.params.id);
+  if (!canAccessProject(req.user!, projectId)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+
+  const siteInventory = db
+    .prepare(
+      `SELECT i.*, COALESCE(SUM(CASE WHEN it.tx_type = 'receive' THEN it.quantity WHEN it.tx_type IN ('issue','consume','transfer','damage') THEN -it.quantity ELSE 0 END), i.current_qty) AS site_qty
+       FROM inventory_items i
+       LEFT JOIN inventory_transactions it ON it.item_id = i.id AND it.project_id = ?
+       GROUP BY i.id
+       ORDER BY i.name ASC`
+    )
+    .all(projectId);
+
+  const siteEquipment = db
+    .prepare(
+      `SELECT eq.*, per.full_name AS operator_name
+       FROM equipment eq
+       LEFT JOIN personnel per ON per.id = eq.assigned_operator_id
+       WHERE eq.assigned_project_id = ?
+       ORDER BY eq.name ASC`
+    )
+    .all(projectId);
+
+  const transactions = db
+    .prepare(
+      `SELECT it.*, i.name AS item_name, i.sku, i.unit, u.full_name AS performed_by_name
+       FROM inventory_transactions it
+       JOIN inventory_items i ON i.id = it.item_id
+       JOIN users u ON u.id = it.performed_by
+       WHERE it.project_id = ?
+       ORDER BY it.id DESC`
+    )
+    .all(projectId);
+
+  const releases = db
+    .prepare(
+      `SELECT wr.*, u.full_name AS released_by_name, rc.full_name AS received_by_name
+       FROM warehouse_releases wr
+       LEFT JOIN users u ON u.id = wr.released_by
+       LEFT JOIN users rc ON rc.id = wr.received_by
+       WHERE wr.project_id = ?
+       ORDER BY wr.id DESC`
+    )
+    .all(projectId);
+
+  const summary = {
+    totalInventoryItems: siteInventory.length,
+    totalEquipment: siteEquipment.length,
+    operationalEquipment: siteEquipment.filter((e: any) => e.condition_status === 'operational').length,
+    maintenanceEquipment: siteEquipment.filter((e: any) => e.condition_status === 'maintenance').length,
+    damagedEquipment: siteEquipment.filter((e: any) => e.condition_status === 'damaged').length,
+  };
+
+  res.json({ siteInventory, siteEquipment, transactions, releases, summary });
+});
+
+router.post('/projects/:id/toolbox/transactions', requireModule('equipment'), requirePermission('equipment', 'edit'), (req: AuthenticatedRequest, res) => {
+  const projectId = Number(req.params.id);
+  if (!canAccessProject(req.user!, projectId)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+
+  const { itemId, txType, quantity, referenceDoc, notes } = req.body || {};
+  const qty = Number(quantity || 0);
+  if (!itemId || qty <= 0) {
+    res.status(400).json({ error: 'Valid item and positive quantity are required' });
+    return;
+  }
+
+  const item = db.prepare('SELECT * FROM inventory_items WHERE id = ?').get(Number(itemId)) as any;
+  if (!item) {
+    res.status(404).json({ error: 'Inventory item not found' });
+    return;
+  }
+
+  transaction(() => {
+    db.prepare(
+      `INSERT INTO inventory_transactions (item_id, project_id, tx_type, quantity, unit_cost, reference_doc, notes, performed_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      Number(itemId),
+      projectId,
+      txType || 'consume',
+      qty,
+      item.unit_cost,
+      referenceDoc || '',
+      notes || '',
+      req.user!.id
+    );
+
+    if (txType === 'return') {
+      db.prepare("UPDATE inventory_items SET current_qty = current_qty + ?, updated_at = datetime('now') WHERE id = ?").run(
+        qty,
+        Number(itemId)
+      );
+    }
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'PROJECT_TOOLBOX_TRANSACTION',
+    module: 'equipment',
+    recordType: 'inventory_transaction',
+    recordRef: `PRJ-${projectId}-ITM-${itemId}`,
+    newValue: { txType, quantity: qty, referenceDoc },
+    ipAddress: req.ip || '',
+  });
+
+  res.status(201).json({ ok: true });
 });
 
 export default router;
