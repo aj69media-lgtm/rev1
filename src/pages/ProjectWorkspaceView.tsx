@@ -22,7 +22,13 @@ import {
 } from 'lucide-react';
 import { CircularProgressRing, StatusLabel } from '../components/Charts';
 import { ProjectFinancialWorkspace } from '../components/ProjectFinancialWorkspace';
+import { PurchaseRequestsWorkspace } from '../components/PurchaseRequestsWorkspace';
 import { ScheduleImportModal } from '../components/ScheduleImportModal';
+import {
+  formatTaskStatusLabel,
+  TaskCompletionSubmitModal,
+  TaskVerificationModal,
+} from '../components/TaskCompletionModals';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { apiRequest, formatCurrency, getApiToken } from '../lib/api';
@@ -111,6 +117,8 @@ export const ProjectWorkspaceView: React.FC<{
   // Task Form & View Mode
   const [taskView, setTaskView] = useState<'list' | 'kanban' | 'calendar'>('list');
   const [showTaskForm, setShowTaskForm] = useState(false);
+  const [completionModalTask, setCompletionModalTask] = useState<any | null>(null);
+  const [verifyTaskId, setVerifyTaskId] = useState<number | null>(null);
   const [taskForm, setTaskForm] = useState({
     title: '',
     description: '',
@@ -118,18 +126,6 @@ export const ProjectWorkspaceView: React.FC<{
     priority: 'medium',
     startDate: new Date().toISOString().slice(0, 10),
     deadline: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
-  });
-
-  // PR Form
-  const [prForm, setPrForm] = useState({
-    itemDescription: '',
-    category: 'Materials',
-    quantity: '1',
-    unit: 'pcs',
-    estimatedUnitCost: '',
-    requiredDate: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
-    suggestedSupplier: '',
-    reason: '',
   });
 
   // QC Form
@@ -341,19 +337,20 @@ export const ProjectWorkspaceView: React.FC<{
     if (!res.queued) loadWorkspace();
   };
 
-  const handleCreatePr = async (e: React.FormEvent) => {
-    e.preventDefault();
-    await apiRequest(`/api/projects/${projectId}/purchase-requests`, {
-      method: 'POST',
-      body: {
-        ...prForm,
-        quantity: Number(prForm.quantity),
-        estimatedUnitCost: Number(prForm.estimatedUnitCost || 0),
-      },
-    });
-    setBanner('Purchase Request submitted.');
-    setPrForm((prev) => ({ ...prev, itemDescription: '', estimatedUnitCost: '', reason: '' }));
-    loadWorkspace();
+  const handleTaskStatusSelect = async (task: any, nextStatus: string) => {
+    if (nextStatus === 'for_review' || nextStatus === 'completed') {
+      setCompletionModalTask(task);
+      return;
+    }
+    try {
+      await apiRequest(`/api/tasks/${task.id}`, {
+        method: 'PATCH',
+        body: { status: nextStatus },
+      });
+      loadWorkspace();
+    } catch (err: any) {
+      setBanner(err?.message || 'Unable to update task status');
+    }
   };
 
   const handleDocUpload = async (e: React.FormEvent) => {
@@ -1201,6 +1198,11 @@ export const ProjectWorkspaceView: React.FC<{
                               {t.description}
                             </p>
                           )}
+                          {t.photo_count > 0 && (
+                            <div className="mt-1 text-[11px] font-medium text-emerald-700">
+                              {t.photo_count} completion photo{t.photo_count > 1 ? 's' : ''} attached
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-slate-700">
                           {t.assigned_to_name ? (
@@ -1217,28 +1219,52 @@ export const ProjectWorkspaceView: React.FC<{
                         <td className={`px-4 py-3 capitalize ${pColor}`}>{t.priority}</td>
                         <td className="px-4 py-3 font-mono">{t.deadline}</td>
                         <td className="px-4 py-3">
-                          <StatusLabel status={t.status} />
+                          <StatusLabel status={t.status} labelOverride={formatTaskStatusLabel(t)} />
                         </td>
-                        <td className="px-4 py-3 text-right">
-                          <select
-                            value={t.status}
-                            onChange={async (e) => {
-                              await apiRequest(`/api/tasks/${t.id}`, {
-                                method: 'PATCH',
-                                body: { status: e.target.value },
-                              });
-                              loadWorkspace();
-                            }}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                          >
-                            {['pending', 'acknowledged', 'in_progress', 'for_review', 'completed', 'on_hold', 'overdue', 'rejected'].map(
-                              (st) => (
-                                <option key={st} value={st}>
-                                  {st.replace(/_/g, ' ')}
-                                </option>
-                              )
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <div className="inline-flex flex-wrap justify-end items-center gap-1.5">
+                            {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                              <button
+                                type="button"
+                                onClick={() => setCompletionModalTask(t)}
+                                className="rounded border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                              >
+                                Submit Proof
+                              </button>
                             )}
-                          </select>
+                            <button
+                              type="button"
+                              onClick={() => setVerifyTaskId(t.id)}
+                              className={`rounded px-2.5 py-1 text-[11px] font-medium ${
+                                t.status === 'for_review' && (hasPerm('tasks', 'verify') || hasPerm('tasks', 'approve'))
+                                  ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                                  : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                              }`}
+                            >
+                              {t.status === 'for_review' && (hasPerm('tasks', 'verify') || hasPerm('tasks', 'approve'))
+                                ? 'Verify'
+                                : 'Evidence'}
+                            </button>
+                            {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                              <select
+                                value={t.status}
+                                onChange={(e) => handleTaskStatusSelect(t, e.target.value)}
+                                className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                              >
+                                {['pending', 'acknowledged', 'in_progress', 'for_review', 'completed', 'on_hold', 'overdue', 'rejected'].map(
+                                  (st) => (
+                                    <option key={st} value={st}>
+                                      {st === 'for_review'
+                                        ? 'submit for review'
+                                        : st === 'completed'
+                                        ? 'complete (photo req.)'
+                                        : st.replace(/_/g, ' ')}
+                                    </option>
+                                  )
+                                )}
+                              </select>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1253,8 +1279,8 @@ export const ProjectWorkspaceView: React.FC<{
               {[
                 { key: 'pending', label: 'Pending' },
                 { key: 'in_progress', label: 'In Progress' },
-                { key: 'for_review', label: 'For Review' },
-                { key: 'completed', label: 'Completed' },
+                { key: 'for_review', label: 'Awaiting Verification' },
+                { key: 'completed', label: 'Completed — Verified' },
               ].map((col) => (
                 <div key={col.key} className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2.5">
                   <div className="flex items-center justify-between text-xs font-semibold text-slate-700 px-1">
@@ -1283,26 +1309,51 @@ export const ProjectWorkspaceView: React.FC<{
                         {t.description && (
                           <p className="text-[11px] text-slate-600 line-clamp-3">{t.description}</p>
                         )}
-                        <div className="text-[11px] text-slate-500">
-                          Assignee: <strong className="text-slate-700">{t.assigned_to_name || 'Unassigned'}</strong>
+                        <div className="flex items-center justify-between text-[11px] text-slate-500">
+                          <span>
+                            Assignee: <strong className="text-slate-700">{t.assigned_to_name || 'Unassigned'}</strong>
+                          </span>
+                          {t.photo_count > 0 && (
+                            <span className="text-emerald-700 font-medium">{t.photo_count} photo</span>
+                          )}
                         </div>
-                        <select
-                          value={t.status}
-                          onChange={async (e) => {
-                            await apiRequest(`/api/tasks/${t.id}`, {
-                              method: 'PATCH',
-                              body: { status: e.target.value },
-                            });
-                            loadWorkspace();
-                          }}
-                          className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
-                        >
-                          {['pending', 'in_progress', 'for_review', 'completed', 'on_hold'].map((s) => (
-                            <option key={s} value={s}>
-                              Move to: {s.replace(/_/g, ' ')}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex gap-1.5 pt-1">
+                          {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                            <button
+                              type="button"
+                              onClick={() => setCompletionModalTask(t)}
+                              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-800 hover:bg-slate-50"
+                            >
+                              Submit Proof
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setVerifyTaskId(t.id)}
+                            className={`flex-1 rounded px-2 py-1 text-[11px] font-medium ${
+                              t.status === 'for_review' && (hasPerm('tasks', 'verify') || hasPerm('tasks', 'approve'))
+                                ? 'bg-emerald-700 text-white'
+                                : 'border border-slate-300 bg-white text-slate-700'
+                            }`}
+                          >
+                            {t.status === 'for_review' && (hasPerm('tasks', 'verify') || hasPerm('tasks', 'approve'))
+                              ? 'Verify'
+                              : 'Evidence'}
+                          </button>
+                        </div>
+                        {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                          <select
+                            value={t.status}
+                            onChange={(e) => handleTaskStatusSelect(t, e.target.value)}
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                          >
+                            {['pending', 'in_progress', 'for_review', 'completed', 'on_hold'].map((s) => (
+                              <option key={s} value={s}>
+                                Move to: {s === 'completed' ? 'complete (requires photo)' : s.replace(/_/g, ' ')}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </div>
                     ))}
                 </div>
@@ -1331,11 +1382,37 @@ export const ProjectWorkspaceView: React.FC<{
                         </div>
                         {t.description && <p className="mt-1 text-[11px] text-slate-600">{t.description}</p>}
                       </div>
-                      <StatusLabel status={t.status} />
+                      <div className="flex items-center gap-2">
+                        <StatusLabel status={t.status} labelOverride={formatTaskStatusLabel(t)} />
+                        <button
+                          type="button"
+                          onClick={() => setVerifyTaskId(t.id)}
+                          className="rounded border border-slate-300 px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Proof
+                        </button>
+                      </div>
                     </div>
                   ))}
               </div>
             </div>
+          )}
+
+          {completionModalTask && (
+            <TaskCompletionSubmitModal
+              task={completionModalTask}
+              onClose={() => setCompletionModalTask(null)}
+              onSubmitted={loadWorkspace}
+            />
+          )}
+
+          {verifyTaskId !== null && (
+            <TaskVerificationModal
+              taskId={verifyTaskId}
+              onClose={() => setVerifyTaskId(null)}
+              onUpdated={loadWorkspace}
+              onOpenResubmit={(task) => setCompletionModalTask(task)}
+            />
           )}
         </div>
       )}
@@ -1356,160 +1433,12 @@ export const ProjectWorkspaceView: React.FC<{
 
       {/* SECTION: PURCHASE REQUESTS */}
       {section === 'procurement' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {hasPerm('procurement', 'create') && (
-            <form onSubmit={handleCreatePr} className="rounded-xl border border-slate-200 bg-white p-5 space-y-3 text-xs h-fit">
-              <h3 className="font-display text-sm font-semibold text-slate-900">New Purchase Request (PR)</h3>
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Item / Service Description *</label>
-                <input
-                  required
-                  value={prForm.itemDescription}
-                  onChange={(e) => setPrForm({ ...prForm, itemDescription: e.target.value })}
-                  className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">Qty *</label>
-                  <input
-                    type="number"
-                    min="1"
-                    required
-                    value={prForm.quantity}
-                    onChange={(e) => setPrForm({ ...prForm, quantity: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">Unit</label>
-                  <input
-                    value={prForm.unit}
-                    onChange={(e) => setPrForm({ ...prForm, unit: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">Est. Unit $</label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={prForm.estimatedUnitCost}
-                    onChange={(e) => setPrForm({ ...prForm, estimatedUnitCost: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">Required Date</label>
-                  <input
-                    type="date"
-                    required
-                    value={prForm.requiredDate}
-                    onChange={(e) => setPrForm({ ...prForm, requiredDate: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium text-slate-700 mb-1">Suggested Supplier</label>
-                  <input
-                    value={prForm.suggestedSupplier}
-                    onChange={(e) => setPrForm({ ...prForm, suggestedSupplier: e.target.value })}
-                    className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                className="w-full rounded-lg bg-slate-900 py-2 font-semibold text-white hover:bg-slate-800"
-              >
-                Submit Purchase Request
-              </button>
-            </form>
-          )}
-
-          <div className="lg:col-span-2 space-y-3">
-            {prs.map((pr) => (
-              <div key={pr.id} className="rounded-xl border border-slate-200 bg-white p-5 space-y-3 text-xs">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <div className="font-mono text-[11px] text-slate-500">
-                      {pr.ref_number} · Required {pr.required_date} · By {pr.requested_by_name}
-                    </div>
-                    <div className="font-display text-sm font-semibold text-slate-900">{pr.item_description}</div>
-                  </div>
-                  <StatusLabel status={pr.status} />
-                </div>
-                <div className="grid grid-cols-4 gap-3 rounded-lg bg-slate-50 p-3 font-mono tabular-nums">
-                  <div>
-                    <div className="text-[11px] text-slate-500 font-sans">Qty</div>
-                    <div className="font-semibold">{pr.quantity} {pr.unit}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-500 font-sans">Estimated Total</div>
-                    <div className="font-semibold">{formatCurrency(pr.estimated_total_cost)}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-500 font-sans">Commitment</div>
-                    <div className="font-semibold text-amber-800">{formatCurrency(pr.commitment_amount)}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-500 font-sans">Settled Actual</div>
-                    <div className="font-semibold text-emerald-700">{formatCurrency(pr.settled_amount)}</div>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {['submitted', 'under_review', 'endorsed'].includes(pr.status) && hasPerm('procurement', 'approve') && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await apiRequest(`/api/purchase-requests/${pr.id}/workflow`, {
-                          method: 'PATCH',
-                          body: { status: 'approved', remarks: 'Approved for commitment & procurement' },
-                        });
-                        loadWorkspace();
-                      }}
-                      className="rounded-md bg-emerald-700 px-3 py-1.5 font-medium text-white hover:bg-emerald-800"
-                    >
-                      Approve PR (Create Commitment)
-                    </button>
-                  )}
-                  {pr.status === 'approved' && hasPerm('procurement', 'edit') && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await apiRequest(`/api/purchase-requests/${pr.id}/workflow`, {
-                          method: 'PATCH',
-                          body: { status: 'ordered', remarks: 'PO issued to supplier' },
-                        });
-                        loadWorkspace();
-                      }}
-                      className="rounded-md bg-slate-900 px-3 py-1.5 font-medium text-white"
-                    >
-                      Issue Purchase Order
-                    </button>
-                  )}
-                  {['ordered', 'partially_delivered'].includes(pr.status) && hasPerm('procurement', 'edit') && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await apiRequest(`/api/purchase-requests/${pr.id}/receive`, {
-                          method: 'POST',
-                          body: { deliveredQty: pr.quantity, actualUnitCost: pr.estimated_unit_cost, recordExpense: true },
-                        });
-                        loadWorkspace();
-                      }}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-800 hover:bg-slate-50"
-                    >
-                      Confirm Delivery & Settle Expense
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <PurchaseRequestsWorkspace
+          projectId={projectId}
+          defaultSiteLocation={p?.location || ''}
+          onRefreshParent={loadWorkspace}
+          onNotify={setBanner}
+        />
       )}
 
       {/* SECTION: QUALITY CONTROL */}

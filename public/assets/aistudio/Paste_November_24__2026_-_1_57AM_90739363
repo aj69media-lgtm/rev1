@@ -1,0 +1,1169 @@
+# CBMS MASTER ENHANCEMENT PROMPT
+## Catalog of Works Management, Reusable Construction Assemblies, Supplier-Based Pricing, Cash Liquidation, Multi-Item Purchase Requests, and Task Completion Verification
+
+### PRIMARY OBJECTIVE
+
+Enhance the existing Construction Business Management System (CBMS) by implementing the features and improvements described in this document.
+
+These are enhancements to the existing application. Do not rebuild the application from scratch.
+
+The objective is to improve the company's construction estimating, quotation preparation, procurement, financial accountability, and project supervision workflows.
+
+All enhancements must be fully integrated with the existing CBMS modules, database, authentication, permissions, and business logic.
+
+## PART 1 — PRE-IMPLEMENTATION REQUIREMENTS
+
+Before modifying the application:
+
+1. Inspect the existing source code, application architecture, database structure, and installed modules.
+2. Identify the existing Catalog of Works, Quotation, Vendor/Supplier, Financial Entry, Cash Liquidation, Purchase Request, Procurement, Inventory, Project Management, Task Management, and Notification modules.
+3. Understand the current relationships and workflows between these modules.
+4. Identify existing database tables and reuse them wherever appropriate.
+5. Identify any existing features that already partially support the requested functionality.
+6. Prepare an implementation plan showing the affected modules, proposed database changes, integrations, and migration requirements.
+7. Preserve existing business records, quotations, supplier information, projects, financial transactions, purchase requests, inventory, and task records.
+8. Do not create duplicate modules or disconnected databases.
+9. Do not remove or break existing working functionality.
+10. Implement the enhancements in manageable phases and test each phase.
+
+**Important:** The application must remain a functional production system. Do not substitute actual functionality with mock screens, placeholder buttons, fabricated records, or simulated workflows.
+
+---
+
+# PART 2 — CATALOG OF WORKS MANAGEMENT
+
+## 2.1 Create a Dedicated Catalog Management Page
+
+Create a dedicated navigation menu named:
+
+**CATALOG OF WORKS MANAGEMENT**
+
+This must be the central administration area for managing all construction work categories, individual materials, labor items, services, and reusable Sets of Works.
+
+Users must not need to open a quotation to create or edit catalog records.
+
+The Catalog Management page must have two main sections:
+
+**A. Individual Items Catalog**
+
+A master database of individual materials, construction supplies, labor components, equipment, and services.
+
+**B. Sets of Works Catalog**
+
+A master database of reusable construction work assemblies containing predefined materials, labor, equipment, and other applicable components.
+
+Provide separate tabs for these two sections.
+
+## 2.2 Individual Items Catalog
+
+Create a searchable and manageable master list of individual construction items.
+
+Each item must contain:
+
+- Unique Item ID.
+- Item Code / SKU.
+- Item Name.
+- Category.
+- Item Description.
+- Technical Specifications.
+- Unit of Measurement.
+- Item Type: Material, Labor, Equipment, Service, or Other.
+- Supplier/Vendor associations.
+- Supplier purchase prices.
+- Default cost, where applicable.
+- Default pricing configuration, where authorized.
+- Active or Inactive status.
+- Remarks.
+- Supporting documents or photographs, where applicable.
+
+Authorized users must be able to:
+
+- Add New Item.
+- Edit Existing Item.
+- View Item Details.
+- Duplicate Item.
+- Archive or deactivate an item.
+- Restore archived items.
+- Search and filter records.
+- Import and export catalog data, where supported.
+
+Allow administrators to add and manage categories, units of measurement, and item classifications.
+
+Prevent duplicate items by checking existing item codes, names, specifications, and relevant matching records.
+
+## 2.3 Work Categories
+
+Create configurable categories for construction works.
+
+Initial categories should include:
+
+- Masonry Works
+- Tiling Works
+- Painting Works
+- Carpentry Works
+- Plumbing Works
+- Electrical Works
+- Concrete Works
+- Waterproofing Works
+- Ceiling Works
+- Roofing Works
+- Metal Works
+- Fabrication Works
+- Custom Works
+
+Administrators must be able to create additional categories, rename categories, rearrange their display order, and deactivate obsolete categories.
+
+Categories must not be hard-coded.
+
+## 2.4 Sets of Works — Reusable Construction Assemblies
+
+Create a dedicated function called:
+
+**SETS OF WORKS**
+
+A Set of Works is a reusable construction work assembly containing all the materials, labor, equipment, and other components required for a particular construction activity.
+
+Each assembly must be saved in the master catalog so it can be reused in future quotations.
+
+Examples:
+
+**Masonry Works**
+- Interior Wall Construction
+- Exterior CHB Wall
+- Pantry Counter
+- Concrete Partition
+- CHB Wall with Plastering
+
+**Tiling Works**
+- Floor Tiling
+- Wall Tiling
+- Bathroom Floor Tiling
+- Kitchen Backsplash
+
+**Painting Works**
+- Interior Wall Painting
+- Exterior Wall Painting
+- Ceiling Painting
+- Metal Surface Painting
+
+**Carpentry Works**
+- Cabinet Installation
+- Door Installation
+- Custom Woodwork
+
+**Plumbing Works**
+- Waterline Installation
+- Drainage Installation
+- Plumbing Fixtures
+
+**Electrical Works**
+- Lighting Installation
+- Power Outlet Installation
+- Electrical Wiring
+
+Allow unlimited additional assemblies within each category.
+
+## 2.5 Work Assembly Template Information
+
+Each Set of Works must contain:
+
+- Unique Assembly Code.
+- Assembly Name.
+- Work Category.
+- Description.
+- Technical Specifications.
+- Unit of Measurement.
+- Default Calculation Method.
+- Default Quantity or Consumption Rate.
+- List of included materials.
+- List of included labor components.
+- Optional equipment and other cost components.
+- Preferred suppliers for applicable materials.
+- Default wastage percentages, where applicable.
+- Labor requirements.
+- Installation instructions.
+- Notes.
+- Template Version.
+- Active or Inactive status.
+
+All assembly components must be editable.
+
+Do not hard-code materials, labor quantities, or calculation formulas for specific work categories.
+
+## 2.6 Visual Assembly Editor
+
+Create an easy-to-use visual editor for creating and modifying Sets of Works.
+
+The editor must allow users to:
+
+- Search for existing items in the Individual Items Catalog.
+- Add multiple materials.
+- Add labor components.
+- Add equipment or services.
+- Remove components.
+- Rearrange component order.
+- Change quantities.
+- Change units of measurement.
+- Specify material requirements.
+- Select preferred suppliers.
+- Set consumption rates.
+- Add wastage percentages.
+- Add technical notes.
+- Preview the complete assembly.
+- Save the assembly as a reusable template.
+
+Provide an **ADD ITEM** function that allows users to insert as many components as necessary.
+
+If an item does not exist in the Individual Items Catalog, authorized users must be able to create a new item without losing the assembly currently being edited.
+
+## 2.7 Example: Interior Wall Construction
+
+Create the capability to configure an assembly such as:
+
+**Category:** Masonry Works
+
+**Set of Works:** Interior Wall Construction
+
+**Description:** Construction of an interior CHB partition wall, including reinforcement, mortar, and associated materials.
+
+Possible components:
+
+| Material / Component | Type | Unit | Default Quantity |
+|---|---|---|---|
+| CHB 4 inches | Material | pcs | Configurable |
+| Reinforcing bars | Material | lengths | Configurable |
+| GI tie wire | Material | kg | Configurable |
+| Cement | Material | bags | Configurable |
+| Sand | Material | cu.m. | Configurable |
+| Mason | Labor | day | Configurable |
+| Helper | Labor | day | Configurable |
+
+These are examples only. The administrator must determine the actual materials, quantities, specifications, and labor requirements.
+
+## 2.8 Example: Pantry Counter Construction
+
+Allow another independent assembly:
+
+**Category:** Custom Works or Masonry Works
+
+**Set of Works:** Pantry Counter Construction
+
+Possible components:
+
+- CHB or concrete support materials.
+- Reinforcing bars.
+- GI tie wire.
+- Cement.
+- Sand.
+- Cement board or other specified substrate.
+- Tile adhesive.
+- Countertop finishing materials.
+- Labor.
+- Other project-specific components.
+
+The user must be able to define a completely different set of materials for this work.
+
+## 2.9 Measurement-Based Calculations
+
+Allow Sets of Works to calculate required material quantities based on the measurement of the work.
+
+Support:
+
+- Fixed quantities.
+- Quantity per square meter.
+- Quantity per linear meter.
+- Quantity per cubic meter.
+- Quantity per piece.
+- Other configurable calculation methods.
+
+Example:
+
+If the user selects Interior Wall Construction and enters 25 square meters, the system calculates material requirements using the consumption rates configured in the assembly.
+
+The calculation must be visible and explainable.
+
+Allow authorized estimators to override calculated quantities.
+
+Do not assume that all construction work uses the same calculation formula.
+
+## 2.10 Custom Work Assemblies
+
+Allow authorized estimators to create a custom Set of Works directly inside the Quotation Editor.
+
+Provide two save options:
+
+1. Save for this quotation only.
+2. Save as a reusable Set of Works in the master catalog.
+
+If saved to the master catalog, the assembly must be available for future quotations.
+
+Changes to quotation-specific assemblies must not automatically change master catalog records.
+
+---
+
+# PART 3 — CATALOG VERSION CONTROL AND PERMISSIONS
+
+## 3.1 Version Control
+
+Implement version tracking for Sets of Works.
+
+When a master assembly is edited:
+
+- Save a new version.
+- Record who made the change.
+- Record the date and time.
+- Preserve the previous version.
+- Allow authorized users to view previous versions.
+- Provide a comparison of changes between versions.
+- Allow new quotations to use the latest active version by default.
+
+Previously prepared or approved quotations must retain their original assembly contents, quantities, descriptions, supplier information, costs, and calculations.
+
+Updating the master catalog must never silently modify historical quotations.
+
+## 3.2 Catalog Permissions
+
+Provide granular permissions:
+
+- View Catalog.
+- Create Individual Items.
+- Edit Individual Items.
+- Manage Categories.
+- Create Sets of Works.
+- Edit Sets of Works.
+- Duplicate Sets of Works.
+- Archive Catalog Records.
+- Restore Archived Records.
+- Manage Supplier Associations.
+- Manage Supplier Prices.
+- Override Material Costs.
+- View Internal Cost Information.
+
+An estimator may have permission to use catalog records in quotations without having permission to edit the master catalog.
+
+If an estimator identifies a missing item, provide an option to request its addition by an authorized catalog administrator.
+
+All permissions must be enforced by the backend.
+
+---
+
+# PART 4 — VENDOR/SUPPLIER-BASED MATERIAL SELECTION AND PRICING
+
+## 4.1 Supplier Integration
+
+Integrate the Individual Items Catalog and Sets of Works directly with the existing Vendor/Supplier Management module.
+
+A material may have multiple suppliers with different prices.
+
+Example:
+
+| Material | Supplier | Unit | Supplier Price |
+|---|---|---|---:|
+| CHB 4 inches | Supplier A | pcs | ₱18.00 |
+| CHB 4 inches | Supplier B | pcs | ₱19.50 |
+| CHB 4 inches | Supplier C | pcs | ₱17.75 |
+
+These prices are illustrative only.
+
+The estimator must be able to compare suppliers and select which supplier's material price to use in the quotation.
+
+## 4.2 Supplier Material Price Records
+
+Each supplier material record must support:
+
+- Material or item.
+- Supplier.
+- Supplier item reference.
+- Brand.
+- Specifications.
+- Unit of Measurement.
+- Unit Purchase Price.
+- Date of Price Update.
+- Price Validity Date, if applicable.
+- Supporting supplier quotation or price-list attachment.
+- Remarks.
+- Active or Inactive status.
+
+Maintain historical supplier prices.
+
+Do not overwrite historical prices when a supplier provides a new price.
+
+## 4.3 Material Selection in Quotation Editor
+
+Make material insertion fast and convenient.
+
+Provide two methods.
+
+**Option A — Search Existing Materials**
+
+Allow the estimator to:
+
+- Search by item name.
+- Search by item code or SKU.
+- Search by category.
+- Search by supplier.
+- Search by brand.
+- Search by technical specification.
+
+Display matching materials with available supplier prices.
+
+**Option B — Quick Material Entry**
+
+Allow the estimator to type the material name directly into the quotation editor.
+
+Display matching materials as the user types.
+
+Example: Typing "CHB 4" should display matching registered materials and available suppliers.
+
+If no matching item exists, authorized users may create a new catalog item or quotation-specific custom item.
+
+Prevent duplicate records caused by slightly different item descriptions.
+
+## 4.4 Supplier Selection and Pricing
+
+When a material is inserted into a quotation:
+
+1. Retrieve its supplier price records.
+2. Display available suppliers.
+3. Display their corresponding prices and units.
+4. Allow the estimator to select a supplier.
+5. Insert the selected purchase price as the material cost input.
+6. Apply the existing quotation pricing and gross profit rules.
+7. Display the resulting selling price.
+
+If no supplier price exists, flag the material as requiring price input or supplier quotation.
+
+Never silently use zero or fabricated material prices.
+
+## 4.5 Preserve Existing Quotation Pricing Logic
+
+The existing quotation calculation engine must remain intact unless a separate approved calculation change is required.
+
+Requirements:
+
+- Supplier price is an internal purchase cost.
+- The existing gross profit margin or pricing configuration must be applied correctly.
+- Manual cost overrides require authorization and a reason.
+- Save the selected supplier and supplier price snapshot in the quotation.
+- Later supplier price changes must not modify existing quotations.
+- Client-facing quotations must never expose supplier purchase prices, internal costs, or gross profit margins.
+
+Maintain the distinction between gross profit margin and markup.
+
+Do not change the meaning of existing pricing formulas.
+
+---
+
+# PART 5 — QUOTATION EDITOR INTEGRATION
+
+## 5.1 Add Set of Works to Quotation
+
+Inside the existing Quotation Editor, add a prominent option:
+
+**ADD SET OF WORKS**
+
+Workflow:
+
+1. Select a work category.
+2. Search and select a Set of Works.
+3. Preview its included materials, labor, equipment, and other components.
+4. Enter the required measurement or work quantity.
+5. Calculate component quantities using the configured assembly formulas.
+6. Review supplier options and prices.
+7. Modify permitted quantities or selections.
+8. Insert the complete assembly into the quotation.
+
+## 5.2 Quotation Item Editing
+
+After insertion, allow authorized estimators to:
+
+- Edit quantities.
+- Change supplier selection.
+- Add or remove materials.
+- Add labor components.
+- Add project-specific items.
+- Override quantities.
+- Modify technical specifications.
+- Add remarks.
+
+These changes must apply to the current quotation only unless the user explicitly chooses to update or create a master template.
+
+## 5.3 Historical Quotation Preservation
+
+Every quotation must preserve:
+
+- Original assembly version.
+- Item descriptions.
+- Supplier selection.
+- Material cost snapshots.
+- Labor cost snapshots.
+- Quantities.
+- Selling prices.
+- Gross profit settings.
+- Calculation results.
+- Applicable VAT and discount settings.
+
+Do not automatically recalculate historical quotations when master catalog prices or templates change.
+
+---
+
+# PART 6 — FINANCIAL ENTRY AND CASH LIQUIDATION
+
+## 6.1 Mandatory Expense Photo Evidence
+
+Enhance the existing Financial Entry and Cash Liquidation modules.
+
+**Every expense submitted for liquidation must include at least one receipt photograph or approved supporting proof attachment. This is mandatory.**
+
+A user must not be able to submit or finalize an expense liquidation without the required evidence.
+
+Accept appropriate evidence such as:
+
+- Official Receipt.
+- Sales Invoice.
+- Cash Invoice.
+- Delivery Receipt, when relevant.
+- Payment Confirmation.
+- Other approved expense documentation.
+
+Allow users to upload photographs directly from their device or take a photograph using a supported mobile camera interface.
+
+Support JPG, JPEG, PNG, and approved document formats.
+
+## 6.2 Expense Entry Fields
+
+Each expense record must contain:
+
+- Expense Reference Number.
+- Project.
+- Expense Date.
+- Expense Category.
+- Expense Description or Purpose.
+- Supplier or Payee.
+- Amount.
+- Payment Method.
+- Employee or Person Who Made the Expense.
+- Date Submitted.
+- Receipt Photograph.
+- Additional Supporting Documents.
+- Remarks.
+
+The receipt must be clearly visible in the submitted financial record.
+
+## 6.3 No-Receipt Exception
+
+Provide a controlled exception workflow for genuine expenses where a conventional receipt is unavailable.
+
+The user must:
+
+- Explain why a receipt is unavailable.
+- Provide alternative supporting evidence.
+- Submit the entry for separate authorization.
+
+Only designated supervisors or management personnel may approve this exception.
+
+Record the exception reason and approving user.
+
+Ordinary users must not bypass the evidence requirement simply by typing a remark.
+
+## 6.4 Cash Liquidation Workflow
+
+Implement the following process:
+
+1. Employee or authorized project personnel creates an expense entry.
+2. Employee attaches receipt or approved supporting evidence.
+3. Employee submits the expense for liquidation.
+4. The system validates mandatory information and attachments.
+5. Entry appears in the pending review queue.
+6. Assigned supervisor reviews the expense and evidence.
+7. Supervisor approves, rejects, or returns the entry for correction.
+8. Approved entry receives the Approved status.
+9. The system records the approver, approval date, and remarks.
+
+Suggested statuses:
+
+- Draft
+- Submitted
+- Pending Review
+- For Correction
+- Resubmitted
+- Approved
+- Rejected
+- Cancelled
+
+## 6.5 Supervisor Review Interface
+
+Provide a dedicated liquidation review page.
+
+The supervisor must be able to:
+
+- View expense details.
+- View and enlarge receipt photographs.
+- Download supporting documents.
+- Review amounts and categories.
+- Compare expenses against approved cash advances, where applicable.
+- Add remarks.
+- Approve.
+- Reject with a required reason.
+- Return for correction.
+
+Approval must record the supervisor identity and exact date and time.
+
+Once approved, the receipt and expense details must remain permanently attached to the financial record.
+
+Do not permit ordinary users to replace or remove evidence after approval.
+
+Any necessary post-approval correction must use an authorized amendment or reversal workflow that preserves the original record.
+
+## 6.6 Financial Audit Trail
+
+Maintain a complete history of:
+
+- Who created the expense.
+- Who submitted it.
+- Who reviewed it.
+- Who approved or rejected it.
+- When each action occurred.
+- What evidence was attached.
+- What changes were made.
+- Why an exception was approved.
+
+Prevent users from approving their own liquidations unless an explicitly authorized management override is configured and logged.
+
+---
+
+# PART 7 — PURCHASE REQUEST: MULTIPLE ITEMS IN ONE REQUEST
+
+## 7.1 Multi-Item Purchase Request
+
+Enhance the existing Purchase Request module to support both single-item and multiple-item requests.
+
+A user must be able to create one purchase request containing several different materials or products.
+
+Do not require separate purchase requests for every item.
+
+## 7.2 Purchase Request Header
+
+Each request must contain:
+
+- Purchase Request Number.
+- Request Date.
+- Requesting Project.
+- Project Site.
+- Requesting Department.
+- Requesting Employee.
+- Required Delivery Date.
+- Preferred Supplier, if applicable.
+- Purpose or Justification.
+- General Remarks.
+- Attachments.
+- Overall Status.
+
+## 7.3 Multiple Line Items
+
+Allow users to dynamically add as many line items as required.
+
+Each line item must contain:
+
+| Field | Description |
+|---|---|
+| Item Code | Existing catalog code, if available |
+| Item Description | Material or product name |
+| Specifications | Size, brand, model, or requirements |
+| Quantity | Requested quantity |
+| Unit | Unit of measurement |
+| Estimated Unit Price | Expected cost |
+| Estimated Total | Quantity × estimated unit price |
+| Preferred Supplier | Supplier selection |
+| Remarks | Item-specific notes |
+
+Users must be able to:
+
+- Add line items.
+- Remove line items before submission.
+- Edit quantities.
+- Change units.
+- Search the existing inventory catalog.
+- Search suppliers.
+- Add new items, subject to permissions.
+- Add item-specific remarks.
+- Attach specifications and supporting documents.
+
+## 7.4 Automatic Calculations
+
+Calculate automatically:
+
+- Line item totals.
+- Number of requested line items.
+- Estimated total purchase request amount.
+
+Recalculate whenever quantities or prices change.
+
+Validate numerical values and prevent invalid negative quantities or prices.
+
+## 7.5 Purchase Request Approval
+
+The approval interface must display all requested items in one organized table.
+
+Approvers must be able to:
+
+- Approve all items.
+- Reject all items.
+- Partially approve selected items.
+- Modify approved quantities, subject to authorization.
+- Return the request for correction.
+- Add remarks to individual items.
+- Add general approval remarks.
+
+Maintain requested quantities separately from approved quantities.
+
+A partially approved request must clearly show the approval status and approved quantity for each line item.
+
+## 7.6 Procurement and Delivery Tracking
+
+After approval, connect the request to the existing procurement workflow.
+
+Procurement personnel must be able to:
+
+- Assign suppliers to individual items.
+- Compare supplier quotations.
+- Record actual purchase prices.
+- Generate purchase orders or procurement records.
+- Track ordered quantities.
+- Track partial deliveries.
+- Record actual quantities received.
+- Attach supplier invoices and delivery receipts.
+- Record delivery discrepancies.
+
+The system must maintain traceability:
+
+**Purchase Request → Approval → Purchase Order → Supplier → Delivery → Warehouse Receiving → Inventory Stock**
+
+Do not automatically increase warehouse stock when a request is submitted or approved.
+
+Only physically received and accepted deliveries may increase warehouse inventory.
+
+---
+
+# PART 8 — TASK MANAGEMENT: MANDATORY COMPLETION PHOTO PROOF
+
+## 8.1 Completion Evidence Requirement
+
+Enhance the existing Task Management module.
+
+Whenever a user attempts to change a task's status to Completed, the system must require at least one completion photograph.
+
+**A task cannot be marked Completed without photographic evidence.**
+
+This requirement applies to tasks assigned to project personnel, engineers, supervisors, contractors, and other authorized users.
+
+Examples:
+
+- Completed masonry work.
+- Installed electrical wiring.
+- Completed plumbing installation.
+- Finished painting.
+- Installed tiles.
+- Completed fabrication.
+- Delivered materials.
+- Repaired equipment.
+- Completed inspection corrections.
+
+## 8.2 Task Completion Form
+
+When a user attempts to mark a task as completed, open a completion submission form.
+
+Required fields:
+
+- Task Reference.
+- Project.
+- Task Description.
+- Assigned Personnel.
+- Completion Date.
+- Actual Completion Remarks.
+- At least one Completion Photograph.
+- Additional Supporting Documents, where applicable.
+
+Allow multiple photographs.
+
+Support direct mobile camera capture and file upload.
+
+Each photograph must be associated with the specific task.
+
+## 8.3 Completion Review Workflow
+
+Where supervisor verification is required, implement:
+
+1. Assigned personnel perform the task.
+2. Personnel upload completion photographs.
+3. Personnel submit the task for verification.
+4. Status changes to For Review.
+5. Assigned supervisor reviews the task and photographs.
+6. Supervisor approves or returns the task for correction.
+7. Once approved, status changes to Completed.
+
+Suggested statuses:
+
+- Pending
+- Acknowledged
+- In Progress
+- For Review
+- Completed
+- Rejected
+- On Hold
+- Overdue
+
+Clearly distinguish:
+
+**Completed — Awaiting Verification:** Completion evidence has been submitted but not yet approved.
+
+**Completed — Verified:** The supervisor has reviewed and accepted the evidence.
+
+Uploading a photograph alone must not automatically make a task verified.
+
+## 8.4 Supervisor Verification Interface
+
+The supervisor must be able to:
+
+- View task details.
+- View and enlarge photographs.
+- Review original task instructions.
+- Compare completed work against requirements.
+- Add verification remarks.
+- Approve completion.
+- Reject or return the task for correction.
+- Request additional photographs.
+
+Require a reason when rejecting or returning a task.
+
+Record the approving supervisor and verification timestamp.
+
+## 8.5 Task Completion History
+
+Maintain:
+
+- Original task assignment.
+- Assigned personnel.
+- Task status changes.
+- Completion submission date.
+- Completion photographs.
+- Submitted remarks.
+- Supervisor review.
+- Approval or rejection.
+- Revisions and resubmissions.
+
+Do not permit users to remove or replace original completion evidence after verification without recording an authorized amendment.
+
+---
+
+# PART 9 — SHARED FILE AND PHOTO MANAGEMENT
+
+All modules must use a secure, consistent attachment management system.
+
+Requirements:
+
+1. Store uploaded files in protected storage.
+2. Do not expose private financial receipts or internal project photographs through public file URLs.
+3. Validate file types and sizes.
+4. Generate unique filenames.
+5. Prevent executable file uploads.
+6. Support image compression and thumbnail generation.
+7. Preserve original photographs where required for audit or financial evidence.
+8. Associate every attachment with its corresponding record.
+9. Enforce file permissions on the server.
+10. Maintain attachment history.
+11. Support authorized viewing and downloading.
+12. Prevent unauthorized deletion of approved financial and task evidence.
+
+The application must remain compatible with GoDaddy cPanel shared hosting.
+
+Do not introduce mandatory external storage, expensive third-party services, or a separate continuously running Node.js server.
+
+---
+
+# PART 10 — NOTIFICATIONS AND ACTIVITY TRACKING
+
+Integrate the new functions with the existing CBMS notification system.
+
+Generate notifications for:
+
+**Catalog**
+- New Sets of Works created.
+- Master templates updated.
+- Supplier prices changed, where relevant.
+- Catalog modification requests.
+
+**Cash Liquidation**
+- New submissions awaiting review.
+- Entries returned for correction.
+- Liquidations approved or rejected.
+
+**Purchase Requests**
+- Requests awaiting approval.
+- Requests returned for correction.
+- Requests partially approved.
+- Requests approved.
+- Purchase and delivery status changes.
+
+**Task Management**
+- Task completion submitted for verification.
+- Completion approved.
+- Completion returned for correction.
+- Additional photo evidence requested.
+
+Notifications must respect user roles, project assignments, and access permissions.
+
+---
+
+# PART 11 — DATABASE, SECURITY, AND BUSINESS LOGIC
+
+Implement the following requirements across all enhancements:
+
+1. Reuse existing CBMS entities wherever possible.
+2. Create new tables and fields only when necessary.
+3. Maintain proper relationships between items, work assemblies, suppliers, quotations, projects, expenses, purchase requests, tasks, users, and attachments.
+4. Use database transactions for critical financial, approval, and inventory-related operations.
+5. Preserve historical quotation pricing and supplier price snapshots.
+6. Prevent duplicate submissions caused by repeated clicks or network retries.
+7. Maintain audit logs for approvals, rejections, overrides, and material changes.
+8. Validate all required fields and attachments on the server.
+9. Enforce role-based and project-based access permissions on the backend.
+10. Ensure private files cannot be accessed through predictable public URLs.
+11. Prevent unauthorized changes to approved records.
+12. Provide clear error handling and meaningful user feedback.
+13. Ensure calculations use actual database records.
+14. Maintain database integrity and referential consistency.
+15. Preserve historical records when catalog items or suppliers are deactivated.
+16. Ensure all new functions work with the existing authentication and session management.
+
+---
+
+# PART 12 — USER INTERFACE AND EXPERIENCE
+
+Maintain the existing CBMS visual design, navigation, and interaction patterns.
+
+The new functions must be intuitive and practical for actual construction operations.
+
+Prioritize:
+
+- Dedicated Catalog of Works Management page.
+- Separate Individual Items and Sets of Works tabs.
+- Category-based catalog navigation.
+- Easy assembly creation and editing.
+- Fast material search.
+- Supplier comparison and selection.
+- Easy insertion of Sets of Works into quotations.
+- Clear material and labor breakdowns.
+- Dynamic multi-item Purchase Request forms.
+- Convenient mobile receipt and completion photo uploads.
+- Clear approval queues.
+- Visible workflow status indicators.
+- Responsive tables and forms.
+
+Avoid unnecessary fields and complicated navigation.
+
+Provide appropriate confirmation messages before irreversible or important actions.
+
+---
+
+# PART 13 — REQUIRED ACCEPTANCE TESTS
+
+Do not consider these enhancements complete until the following tests pass.
+
+## A. Catalog Management
+
+1. Open Catalog of Works Management.
+2. Create a new work category.
+3. Add individual materials to the catalog.
+4. Edit an existing material.
+5. Register multiple supplier prices for a material.
+6. Create a new Set of Works.
+7. Add several materials and labor components.
+8. Save the assembly.
+9. Edit the assembly.
+10. Duplicate the assembly.
+11. Archive and restore an assembly.
+12. Verify version history.
+13. Confirm that old quotations are not modified.
+
+## B. Quotation Integration
+
+1. Open a new quotation.
+2. Select Add Set of Works.
+3. Select an existing assembly.
+4. Enter the work measurement.
+5. Verify calculated material quantities.
+6. Select a supplier for each applicable material.
+7. Verify supplier cost and quotation selling price.
+8. Override a quantity where authorized.
+9. Save the quotation.
+10. Update the master assembly and supplier prices.
+11. Confirm that the previously saved quotation retains its original values.
+
+## C. Supplier Pricing
+
+1. Register multiple suppliers for the same material.
+2. Enter different supplier prices.
+3. Search for the material.
+4. Compare suppliers.
+5. Select a supplier.
+6. Insert the material into a quotation.
+7. Update the supplier's price.
+8. Confirm historical quotation pricing remains unchanged.
+
+## D. Cash Liquidation
+
+1. Create an expense.
+2. Attempt to submit without a receipt photograph.
+3. Confirm submission is blocked.
+4. Upload receipt evidence.
+5. Submit the expense.
+6. Open the supervisor review queue.
+7. View and enlarge the receipt.
+8. Approve or reject the expense.
+9. Verify approval records and audit history.
+10. Test the controlled no-receipt exception workflow.
+
+## E. Multi-Item Purchase Request
+
+1. Create a purchase request containing at least five different items.
+2. Enter different quantities, units, and prices.
+3. Verify automatic line totals.
+4. Verify the overall request total.
+5. Submit the request.
+6. Partially approve selected items.
+7. Confirm original requested quantities remain unchanged.
+8. Verify approved quantities.
+9. Create the procurement and receiving records.
+10. Confirm that only accepted deliveries update warehouse inventory.
+
+## F. Task Completion
+
+1. Create and assign a task.
+2. Attempt to mark it Completed without a photograph.
+3. Confirm completion is blocked.
+4. Upload multiple photographs.
+5. Submit for verification.
+6. Open the supervisor review queue.
+7. Review the evidence.
+8. Approve the task.
+9. Test returning a task for correction.
+10. Verify that completion history and photographs are preserved.
+
+## G. Security and Data Integrity
+
+1. Test different user roles.
+2. Confirm unauthorized users cannot edit master catalog records.
+3. Confirm unauthorized users cannot override supplier costs.
+4. Confirm unauthorized users cannot approve financial entries.
+5. Confirm unauthorized users cannot approve tasks.
+6. Confirm private receipts and project photographs cannot be accessed publicly.
+7. Confirm all important changes are logged.
+8. Confirm existing CBMS records remain intact.
+9. Test concurrent submissions and duplicate requests.
+10. Verify database consistency after each workflow.
+
+---
+
+# PART 14 — IMPLEMENTATION PRIORITIES
+
+Implement the enhancements in the following order:
+
+**Phase 1 — Catalog Foundation**
+- Catalog of Works Management page.
+- Individual Items Catalog.
+- Work Categories.
+- Sets of Works.
+- Assembly Editor.
+- Version Control.
+- Permissions.
+
+**Phase 2 — Supplier and Quotation Integration**
+- Supplier material price records.
+- Material search and quick entry.
+- Supplier comparison.
+- Supplier price snapshots.
+- Add Set of Works to Quotation.
+- Measurement-based material calculations.
+- Historical quotation preservation.
+
+**Phase 3 — Purchase Request Enhancement**
+- Multi-item purchase request.
+- Dynamic line-item editor.
+- Automatic calculations.
+- Partial approvals.
+- Procurement and receiving integration.
+
+**Phase 4 — Financial Accountability**
+- Mandatory receipt uploads.
+- Cash liquidation submission.
+- Supervisor review.
+- Controlled exceptions.
+- Financial audit trail.
+
+**Phase 5 — Task Verification**
+- Mandatory completion photographs.
+- For Review status.
+- Supervisor verification.
+- Correction and resubmission.
+- Completion evidence history.
+
+**Phase 6 — Final Integration and Testing**
+- Notifications.
+- File security.
+- Role permissions.
+- Cross-module integration.
+- Performance testing.
+- Regression testing.
+- Deployment verification.
+
+Do not implement all phases as disconnected features. Each phase must integrate with the existing CBMS.
+
+---
+
+# PART 15 — FINAL NON-NEGOTIABLE REQUIREMENTS
+
+1. Do not rebuild the application from scratch.
+2. Do not destroy, overwrite, or duplicate existing records.
+3. Do not create disconnected catalog, supplier, finance, purchasing, or task modules.
+4. The Catalog of Works must be manageable independently of quotation preparation.
+5. Sets of Works must be reusable across quotations.
+6. Individual materials must be linked to the supplier database.
+7. Supplier prices must be stored historically.
+8. Historical quotations must preserve their original prices and calculations.
+9. Expense liquidation submissions must require photographic proof or an authorized exception.
+10. Purchase Requests must support multiple line items in a single request.
+11. Tasks must require completion photographs before completion can be submitted.
+12. Supervisor verification must be supported where configured.
+13. All approvals and important changes must be auditable.
+14. All private documents and photographs must be protected.
+15. All new features must work with the existing CBMS authentication, permissions, and database.
+16. All functionality must be genuinely implemented and tested.
+17. Maintain compatibility with PHP/MySQL or MariaDB and GoDaddy cPanel shared hosting.
+18. Do not introduce unnecessary microservices, Redis, mandatory WebSockets, Docker, Kubernetes, or a continuously running Node.js server.
+
+## FINAL INSTRUCTION TO GOOGLE AI
+
+Begin by inspecting the existing CBMS application and preparing the implementation plan.
+
+Do not immediately rewrite existing modules.
+
+Identify what can be reused, what needs enhancement, and what database changes are required.
+
+Implement the features in the specified phases while preserving all existing functionality and records.
+
+After implementation, provide:
+
+- Summary of completed enhancements.
+- List of modified modules.
+- List of new database tables and modified fields.
+- Database migration scripts.
+- Description of integrations.
+- User permissions added or modified.
+- Test results for every acceptance test.
+- Known limitations or incomplete items.
+- Deployment and rollback instructions.
+
+The final result must be a fully functional enhancement of the existing Construction Business Management System, suitable for actual construction estimating, purchasing, financial accountability, and project operations.
+
+**The priority is reliable business functionality, accurate calculations, traceable transactions, secure evidence management, and an easy-to-use interface—not merely making the application look complete.**

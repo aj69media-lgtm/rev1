@@ -12,6 +12,7 @@ import { db, transaction } from '../db.ts';
 import { createNotification, emitSyncEvent } from '../realtime.ts';
 import {
   buildDefaultScopeSubject,
+  calcSellingRate,
   recalculateRevision,
   runReferenceReconciliation,
   sanitizeRevisionForUser,
@@ -19,7 +20,12 @@ import {
   type QuotationSectionInput,
   type ScopeOptions,
 } from '../quotationEngine.ts';
-import { DEFAULT_SCOPE_OPTIONS, DEFAULT_TERMS, ensureQuotationReferenceData } from '../quotationSeed.ts';
+import {
+  DEFAULT_SCOPE_OPTIONS,
+  DEFAULT_TERMS,
+  ensureCatalogOfWorksSeed,
+  ensureQuotationReferenceData,
+} from '../quotationSeed.ts';
 
 const router = Router();
 router.use(requireAuth, requireInternalUser, requireModule('quotations'));
@@ -324,6 +330,7 @@ router.get('/quotations/reference/reconciliation', requirePermission('quotations
 // 3. Catalog, General Requirements, Units, Categories, Price History, Locations, Settings
 router.get('/quotations/catalog/meta', requirePermission('quotations', 'view'), (_req, res) => {
   ensureQuotationReferenceData();
+  ensureCatalogOfWorksSeed();
   const units = db.prepare('SELECT * FROM quotation_units WHERE is_active = 1 ORDER BY code ASC').all();
   const categories = db.prepare('SELECT * FROM quotation_categories WHERE is_active = 1 ORDER BY sort_order ASC, name ASC').all();
   const locations = db.prepare('SELECT * FROM ph_locations ORDER BY province ASC, municipality ASC').all();
@@ -332,38 +339,84 @@ router.get('/quotations/catalog/meta', requirePermission('quotations', 'view'), 
   res.json({ units, categories, locations, clients, settings });
 });
 
+function loadActiveSupplierPricesMap(): Map<number, any[]> {
+  const rows = db
+    .prepare(
+      `SELECT sp.id, sp.catalog_item_id, sp.supplier_id, sp.supplier_item_ref, sp.brand,
+              sp.specifications, sp.unit, sp.unit_price, sp.effective_date, sp.valid_until,
+              sp.remarks, sp.is_preferred,
+              s.supplier_code, s.name AS supplier_name, s.payment_terms
+       FROM catalog_item_supplier_prices sp
+       JOIN suppliers s ON s.id = sp.supplier_id
+       WHERE sp.is_active = 1 AND s.is_active = 1
+       ORDER BY sp.is_preferred DESC, sp.unit_price ASC, sp.id DESC`
+    )
+    .all() as any[];
+
+  const map = new Map<number, any[]>();
+  for (const r of rows) {
+    const arr = map.get(Number(r.catalog_item_id)) || [];
+    arr.push(r);
+    map.set(Number(r.catalog_item_id), arr);
+  }
+  return map;
+}
+
 router.get('/quotations/catalog/items', requirePermission('quotations', 'view'), (req: AuthenticatedRequest, res) => {
   ensureQuotationReferenceData();
+  ensureCatalogOfWorksSeed();
   const canViewCosting =
     req.user!.role_slug === 'system_admin' || hasPermission(req.user!, 'quotations', 'view_internal_costing');
 
-  const { category, search, grOnly, includeInactive } = req.query;
+  const { category, itemType, search, grOnly, includeInactive } = req.query;
   const where: string[] = ['1=1'];
   const params: unknown[] = [];
 
   if (!includeInactive) {
-    where.push('is_active = 1');
+    where.push('ci.is_active = 1');
   }
   if (category && category !== 'all') {
-    where.push('category = ?');
+    where.push('ci.category = ?');
     params.push(String(category));
   }
+  if (itemType && itemType !== 'all') {
+    where.push('ci.item_type = ?');
+    params.push(String(itemType));
+  }
   if (grOnly === '1') {
-    where.push('is_general_requirement = 1');
+    where.push('ci.is_general_requirement = 1');
   }
   if (search) {
     const like = `%${String(search).trim()}%`;
-    where.push('(item_code LIKE ? OR name LIKE ? OR description LIKE ? OR specification LIKE ?)');
-    params.push(like, like, like, like);
+    where.push(
+      `(ci.item_code LIKE ? OR ci.name LIKE ? OR ci.description LIKE ? OR ci.specification LIKE ? OR ci.category LIKE ?
+        OR EXISTS (
+          SELECT 1 FROM catalog_item_supplier_prices sp
+          JOIN suppliers s ON s.id = sp.supplier_id
+          WHERE sp.catalog_item_id = ci.id AND sp.is_active = 1
+            AND (s.name LIKE ? OR sp.brand LIKE ? OR sp.supplier_item_ref LIKE ? OR sp.specifications LIKE ?)
+        ))`
+    );
+    params.push(like, like, like, like, like, like, like, like, like);
   }
 
   const rawItems = db
-    .prepare(`SELECT * FROM quotation_catalog_items WHERE ${where.join(' AND ')} ORDER BY is_general_requirement DESC, category ASC, name ASC`)
+    .prepare(
+      `SELECT ci.* FROM quotation_catalog_items ci
+       WHERE ${where.join(' AND ')}
+       ORDER BY ci.is_general_requirement DESC, ci.category ASC, ci.name ASC`
+    )
     .all(...params) as any[];
 
+  const supplierPriceMap = loadActiveSupplierPricesMap();
+
   const items = rawItems.map((it) => {
-    const matSell = it.mat_unit_cost > 0 ? Math.ceil(Number((it.mat_unit_cost / (1 - it.default_mat_gp_pct)).toFixed(10))) : 0;
-    const lbrSell = it.lbr_unit_cost > 0 ? Math.ceil(Number((it.lbr_unit_cost / (1 - it.default_lbr_gp_pct)).toFixed(10))) : 0;
+    const matSell = calcSellingRate(Number(it.mat_unit_cost || 0), Number(it.default_mat_gp_pct ?? 0.3), 'computed');
+    const lbrSell = calcSellingRate(Number(it.lbr_unit_cost || 0), Number(it.default_lbr_gp_pct ?? 0.3), 'computed');
+    const supPrices = supplierPriceMap.get(Number(it.id)) || [];
+    const preferred = supPrices.find((sp) => sp.is_preferred) || supPrices[0] || null;
+    const hasSupplierPrice = supPrices.length > 0;
+
     if (!canViewCosting) {
       return {
         id: it.id,
@@ -373,23 +426,382 @@ router.get('/quotations/catalog/items', requirePermission('quotations', 'view'),
         specification: it.specification,
         category: it.category,
         subcategory: it.subcategory,
+        item_type: it.item_type || 'Material',
         default_unit: it.default_unit,
         is_general_requirement: it.is_general_requirement,
         is_active: it.is_active,
         mat_sell_rate: matSell,
         lbr_sell_rate: lbrSell,
         combined_sell_rate: matSell + lbrSell,
+        has_supplier_price: hasSupplierPrice,
+        supplier_count: supPrices.length,
+        supplier_prices: [],
       };
     }
     return {
       ...it,
+      item_type: it.item_type || 'Material',
       mat_sell_rate: matSell,
       lbr_sell_rate: lbrSell,
       combined_sell_rate: matSell + lbrSell,
+      has_supplier_price: hasSupplierPrice,
+      supplier_count: supPrices.length,
+      preferred_supplier_id: preferred?.supplier_id ?? null,
+      preferred_supplier_price_id: preferred?.id ?? null,
+      preferred_supplier_name: preferred?.supplier_name ?? it.supplier_ref ?? '',
+      preferred_supplier_unit_price: preferred ? Number(preferred.unit_price) : null,
+      supplier_prices: supPrices,
     };
   });
 
   res.json({ items, canViewInternalCosting: canViewCosting });
+});
+
+router.get('/quotations/catalog/assemblies', requirePermission('quotations', 'view'), (req: AuthenticatedRequest, res) => {
+  ensureQuotationReferenceData();
+  ensureCatalogOfWorksSeed();
+  const canViewCosting =
+    req.user!.role_slug === 'system_admin' || hasPermission(req.user!, 'quotations', 'view_internal_costing');
+
+  const { category, search, includeInactive } = req.query;
+  const where: string[] = ['1=1'];
+  const params: unknown[] = [];
+
+  if (!includeInactive) {
+    where.push('wa.is_active = 1');
+  }
+  if (category && category !== 'all') {
+    where.push('wa.category_name = ?');
+    params.push(String(category));
+  }
+  if (search) {
+    const like = `%${String(search).trim()}%`;
+    where.push(
+      `(wa.assembly_code LIKE ? OR wa.name LIKE ? OR wa.description LIKE ? OR wa.specifications LIKE ? OR wa.category_name LIKE ?
+        OR EXISTS (
+          SELECT 1 FROM work_assembly_items wai
+          WHERE wai.assembly_id = wa.id
+            AND (wai.item_code LIKE ? OR wai.item_name LIKE ? OR wai.specification LIKE ?)
+        ))`
+    );
+    params.push(like, like, like, like, like, like, like, like);
+  }
+
+  const rawAssemblies = db
+    .prepare(`SELECT wa.* FROM work_assemblies wa WHERE ${where.join(' AND ')} ORDER BY wa.category_name ASC, wa.name ASC`)
+    .all(...params) as any[];
+
+  const supplierPriceMap = loadActiveSupplierPricesMap();
+  const compStmt = db.prepare(
+    `SELECT wai.*,
+            ci.name AS catalog_name,
+            ci.description AS catalog_description,
+            ci.specification AS catalog_specification,
+            ci.category AS catalog_category,
+            ci.item_type AS catalog_item_type,
+            ci.mat_unit_cost,
+            ci.lbr_unit_cost,
+            ci.default_mat_gp_pct,
+            ci.default_lbr_gp_pct,
+            ci.supplier_ref AS catalog_supplier_ref,
+            s.name AS preferred_supplier_name
+     FROM work_assembly_items wai
+     LEFT JOIN quotation_catalog_items ci ON ci.id = wai.catalog_item_id
+     LEFT JOIN suppliers s ON s.id = wai.preferred_supplier_id
+     WHERE wai.assembly_id = ?
+     ORDER BY wai.sort_order ASC, wai.id ASC`
+  );
+
+  const assemblies = rawAssemblies.map((asm) => {
+    const rawComps = compStmt.all(asm.id) as any[];
+    let estUnitSelling = 0;
+    let estUnitCost = 0;
+
+    const components = rawComps.map((c) => {
+      const catId = c.catalog_item_id ? Number(c.catalog_item_id) : null;
+      const supPrices = catId ? supplierPriceMap.get(catId) || [] : [];
+      const chosenSupPrice =
+        supPrices.find((sp) => c.preferred_supplier_id && Number(sp.supplier_id) === Number(c.preferred_supplier_id)) ||
+        supPrices.find((sp) => sp.is_preferred) ||
+        supPrices[0] ||
+        null;
+
+      const baseMatCost = chosenSupPrice ? Number(chosenSupPrice.unit_price) : Number(c.mat_unit_cost || 0);
+      const baseLbrCost = Number(c.lbr_unit_cost || 0);
+      const matGp = Number(c.default_mat_gp_pct ?? 0.3);
+      const lbrGp = Number(c.default_lbr_gp_pct ?? 0.3);
+      const matSell = calcSellingRate(baseMatCost, matGp, 'computed');
+      const lbrSell = calcSellingRate(baseLbrCost, lbrGp, 'computed');
+      const combinedSell = matSell + lbrSell;
+
+      const rate = Number(c.consumption_rate || 0);
+      const waste = Number(c.wastage_pct || 0);
+      const refQty = c.calc_basis === 'fixed' ? rate : Number((rate * (1 + waste / 100)).toFixed(4));
+      estUnitSelling += refQty * combinedSell;
+      estUnitCost += refQty * (baseMatCost + baseLbrCost);
+
+      const hasSupplierPrice = supPrices.length > 0;
+      const missingPriceWarning = c.component_type === 'Material' && !hasSupplierPrice && baseMatCost <= 0;
+
+      if (!canViewCosting) {
+        return {
+          id: c.id,
+          assembly_id: c.assembly_id,
+          catalog_item_id: catId,
+          component_type: c.component_type,
+          item_code: c.item_code,
+          item_name: c.item_name,
+          specification: c.specification || c.catalog_specification || '',
+          unit: c.unit,
+          calc_basis: c.calc_basis,
+          consumption_rate: rate,
+          wastage_pct: waste,
+          notes: c.notes || '',
+          sort_order: c.sort_order,
+          mat_sell_rate: matSell,
+          lbr_sell_rate: lbrSell,
+          combined_sell_rate: combinedSell,
+          has_supplier_price: hasSupplierPrice,
+          missing_price_warning: missingPriceWarning,
+          supplier_prices: [],
+        };
+      }
+
+      return {
+        id: c.id,
+        assembly_id: c.assembly_id,
+        catalog_item_id: catId,
+        component_type: c.component_type,
+        item_code: c.item_code,
+        item_name: c.item_name,
+        specification: c.specification || c.catalog_specification || '',
+        unit: c.unit,
+        calc_basis: c.calc_basis,
+        consumption_rate: rate,
+        wastage_pct: waste,
+        preferred_supplier_id: chosenSupPrice?.supplier_id ?? c.preferred_supplier_id ?? null,
+        preferred_supplier_price_id: chosenSupPrice?.id ?? null,
+        preferred_supplier_name: chosenSupPrice?.supplier_name ?? c.preferred_supplier_name ?? c.catalog_supplier_ref ?? '',
+        mat_unit_cost: baseMatCost,
+        lbr_unit_cost: baseLbrCost,
+        default_mat_gp_pct: matGp,
+        default_lbr_gp_pct: lbrGp,
+        mat_sell_rate: matSell,
+        lbr_sell_rate: lbrSell,
+        combined_sell_rate: combinedSell,
+        has_supplier_price: hasSupplierPrice,
+        missing_price_warning: missingPriceWarning,
+        supplier_prices: supPrices,
+        notes: c.notes || '',
+        sort_order: c.sort_order,
+      };
+    });
+
+    const baseResult: any = {
+      ...asm,
+      component_count: components.length,
+      estimated_unit_selling: Math.round(estUnitSelling * 100) / 100,
+      components,
+    };
+    if (canViewCosting) {
+      baseResult.estimated_unit_cost = Math.round(estUnitCost * 100) / 100;
+    }
+    return baseResult;
+  });
+
+  res.json({ assemblies, canViewInternalCosting: canViewCosting });
+});
+
+router.post('/quotations/catalog/custom-assembly', requirePermission('quotations', 'edit'), (req: AuthenticatedRequest, res) => {
+  const canCreateMaster =
+    req.user!.role_slug === 'system_admin' || hasPermission(req.user!, 'catalog', 'create_assembly');
+  if (!canCreateMaster) {
+    res.status(403).json({
+      error: 'Saving reusable Sets of Works to the master catalog requires catalog:create_assembly permission. You may still insert it for this quotation only.',
+    });
+    return;
+  }
+
+  const b = req.body || {};
+  const assemblyCode = String(b.assemblyCode || '').trim().toUpperCase();
+  const name = String(b.name || '').trim();
+  const categoryName = String(b.categoryName || '').trim();
+  const components = Array.isArray(b.components) ? b.components : [];
+
+  if (!assemblyCode || !name || !categoryName) {
+    res.status(400).json({ error: 'Package code, name, and work category are required' });
+    return;
+  }
+  if (components.length === 0) {
+    res.status(400).json({ error: 'At least one component item is required in the Set of Works' });
+    return;
+  }
+
+  const dup = db.prepare('SELECT id FROM work_assemblies WHERE UPPER(assembly_code) = ?').get(assemblyCode);
+  if (dup) {
+    res.status(409).json({ error: `Set of Works code "${assemblyCode}" already exists in the master catalog` });
+    return;
+  }
+
+  const catRow = db.prepare('SELECT id FROM quotation_categories WHERE name = ?').get(categoryName) as { id: number } | undefined;
+
+  const assemblyId = transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO work_assemblies (
+          assembly_code, name, category_id, category_name, description, specifications,
+          unit, default_calc_method, default_qty, labor_requirements, installation_instructions, notes,
+          current_version, is_active, created_by, updated_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`
+      )
+      .run(
+        assemblyCode,
+        name,
+        catRow?.id ?? null,
+        categoryName,
+        b.description || '',
+        b.specifications || '',
+        b.unit || 'sq.m',
+        b.defaultCalcMethod || 'per_sqm',
+        Number(b.defaultQty || 1),
+        b.laborRequirements || '',
+        b.installationInstructions || '',
+        b.notes || 'Created from Quotation Editor',
+        req.user!.id,
+        req.user!.id
+      );
+    const id = Number(info.lastInsertRowid);
+
+    const insComp = db.prepare(
+      `INSERT INTO work_assembly_items (
+        assembly_id, catalog_item_id, component_type, item_code, item_name, specification,
+        unit, calc_basis, consumption_rate, wastage_pct, preferred_supplier_id, notes, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const snapComponents: any[] = [];
+    components.forEach((c: any, idx: number) => {
+      const compType = c.componentType || 'Material';
+      const itemCode = String(c.itemCode || '').trim();
+      const itemName = String(c.itemName || 'Component').trim();
+      const unit = String(c.unit || 'pcs');
+      const calcBasis = String(c.calcBasis || 'per_unit');
+      const rate = Number(c.consumptionRate ?? 1);
+      const waste = Number(c.wastagePct ?? 0);
+      const prefSupId = c.preferredSupplierId ? Number(c.preferredSupplierId) : null;
+      const catItemId = c.catalogItemId ? Number(c.catalogItemId) : null;
+      insComp.run(
+        id,
+        catItemId,
+        compType,
+        itemCode,
+        itemName,
+        c.specification || '',
+        unit,
+        calcBasis,
+        rate,
+        waste,
+        prefSupId,
+        c.notes || '',
+        idx + 1
+      );
+      snapComponents.push({
+        catalog_item_id: catItemId,
+        component_type: compType,
+        item_code: itemCode,
+        item_name: itemName,
+        specification: c.specification || '',
+        unit,
+        calc_basis: calcBasis,
+        consumption_rate: rate,
+        wastage_pct: waste,
+        preferred_supplier_id: prefSupId,
+        sort_order: idx + 1,
+      });
+    });
+
+    const snapshot = {
+      assembly_code: assemblyCode,
+      name,
+      category_name: categoryName,
+      description: b.description || '',
+      specifications: b.specifications || '',
+      unit: b.unit || 'sq.m',
+      default_calc_method: b.defaultCalcMethod || 'per_sqm',
+      default_qty: Number(b.defaultQty || 1),
+      components: snapComponents,
+    };
+
+    db.prepare(
+      `INSERT INTO work_assembly_versions (assembly_id, version_number, change_summary, snapshot_json, changed_by)
+       VALUES (?, 1, 'Created from Quotation Editor', ?, ?)`
+    ).run(id, JSON.stringify(snapshot), req.user!.id);
+
+    return id;
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'CREATE_WORK_ASSEMBLY_FROM_QUOTE',
+    module: 'catalog',
+    recordType: 'work_assembly',
+    recordRef: assemblyCode,
+    newValue: { id: assemblyId, name, componentCount: components.length },
+    ipAddress: req.ip || '',
+  });
+  emitSyncEvent({ eventType: 'catalog:assembly_created', module: 'catalog', payload: { assemblyId, assemblyCode } });
+  res.status(201).json({ id: assemblyId, assemblyCode });
+});
+
+router.post('/quotations/catalog/request-missing', requirePermission('quotations', 'edit'), (req: AuthenticatedRequest, res) => {
+  const b = req.body || {};
+  const requestedName = String(b.requestedName || '').trim();
+  if (!requestedName) {
+    res.status(400).json({ error: 'Requested item name is required' });
+    return;
+  }
+  const info = db
+    .prepare(
+      `INSERT INTO catalog_requests (
+        request_type, requested_name, category, item_type, specification,
+        suggested_unit, suggested_supplier, estimated_price, notes, status, requested_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+    )
+    .run(
+      b.requestType || 'new_item',
+      requestedName,
+      b.category || 'General Items',
+      b.itemType || 'Material',
+      b.specification || '',
+      b.suggestedUnit || 'pcs',
+      b.suggestedSupplier || '',
+      Number(b.estimatedPrice || 0),
+      b.notes || 'Requested from Quotation Editor',
+      req.user!.id
+    );
+
+  const reqId = Number(info.lastInsertRowid);
+  const admins = db
+    .prepare(
+      `SELECT DISTINCT u.id FROM users u
+       JOIN roles r ON r.id = u.role_id
+       JOIN role_permissions rp ON rp.role_id = r.id
+       WHERE u.is_active = 1 AND rp.module_slug = 'catalog' AND rp.action IN ('create_item','create_assembly')`
+    )
+    .all() as Array<{ id: number }>;
+
+  for (const adm of admins) {
+    createNotification({
+      userId: adm.id,
+      type: 'catalog_request',
+      title: `New Catalog Item Request: ${requestedName}`,
+      body: `${req.user!.full_name} requested adding "${requestedName}" (${b.category || 'General'}) from Quotation Editor.`,
+      linkSection: 'catalog',
+    });
+  }
+
+  res.status(201).json({ id: reqId });
 });
 
 router.post('/quotations/catalog/items', requirePermission('quotations', 'edit'), (req: AuthenticatedRequest, res) => {
@@ -1035,6 +1447,17 @@ router.put('/quotations/:id/draft', requirePermission('quotations', 'edit'), (re
     overrideReason: String(it.overrideReason ?? it.override_reason ?? ''),
     catalogItemId: it.catalogItemId ?? it.catalog_item_id ?? null,
     supplierRef: String(it.supplierRef ?? it.supplier_ref ?? ''),
+    sourceAssemblyId: it.sourceAssemblyId ?? it.source_assembly_id ?? null,
+    sourceAssemblyCode: String(it.sourceAssemblyCode ?? it.source_assembly_code ?? ''),
+    sourceAssemblyVersion: it.sourceAssemblyVersion ?? it.source_assembly_version ?? null,
+    supplierId: it.supplierId ?? it.supplier_id ?? null,
+    supplierPriceId: it.supplierPriceId ?? it.supplier_price_id ?? null,
+    componentType: String(it.componentType ?? it.component_type ?? ''),
+    calcBasis: String(it.calcBasis ?? it.calc_basis ?? ''),
+    consumptionRate: it.consumptionRate ?? it.consumption_rate ?? null,
+    wastagePct: it.wastagePct ?? it.wastage_pct ?? null,
+    measurementQty: it.measurementQty ?? it.measurement_qty ?? null,
+    formulaText: String(it.formulaText ?? it.formula_text ?? ''),
     sortOrder: Number(it.sortOrder ?? idx + 1),
   }));
 
@@ -1074,8 +1497,12 @@ router.put('/quotations/:id/draft', requirePermission('quotations', 'edit'), (re
         extended_mat_sell, extended_lbr_sell, extended_selling,
         extended_mat_cost, extended_lbr_cost, extended_cost, gross_profit,
         override_mat_rate, override_lbr_rate, override_reason, overridden_by, overridden_at,
-        catalog_item_id, supplier_ref, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        catalog_item_id, supplier_ref,
+        source_assembly_id, source_assembly_code, source_assembly_version,
+        supplier_id, supplier_price_id, component_type, calc_basis,
+        consumption_rate, wastage_pct, measurement_qty, formula_text,
+        sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     for (const it of summary.items) {
@@ -1118,6 +1545,17 @@ router.put('/quotations/:id/draft', requirePermission('quotations', 'edit'), (re
         isOverride ? new Date().toISOString() : null,
         it.catalogItemId ?? null,
         it.supplierRef || '',
+        it.sourceAssemblyId ?? null,
+        it.sourceAssemblyCode || '',
+        it.sourceAssemblyVersion ?? null,
+        it.supplierId ?? null,
+        it.supplierPriceId ?? null,
+        it.componentType || '',
+        it.calcBasis || '',
+        it.consumptionRate ?? null,
+        it.wastagePct ?? null,
+        it.measurementQty ?? null,
+        it.formulaText || '',
         it.sortOrder
       );
       if (it.tempKey) rowMap.set(it.tempKey, Number(itRes.lastInsertRowid));
@@ -1328,8 +1766,12 @@ router.post('/quotations/:id/revisions', requirePermission('quotations', 'edit')
         mat_sell_rate, lbr_sell_rate, combined_unit_rate,
         extended_mat_sell, extended_lbr_sell, extended_selling,
         extended_mat_cost, extended_lbr_cost, extended_cost, gross_profit,
-        override_mat_rate, override_lbr_rate, override_reason, catalog_item_id, supplier_ref, sort_order
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        override_mat_rate, override_lbr_rate, override_reason, catalog_item_id, supplier_ref,
+        source_assembly_id, source_assembly_code, source_assembly_version,
+        supplier_id, supplier_price_id, component_type, calc_basis,
+        consumption_rate, wastage_pct, measurement_qty, formula_text,
+        sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     for (const it of baseRev.items) {
       const newSecId = secMap.get(it.section_id)!;
@@ -1342,7 +1784,11 @@ router.post('/quotations/:id/revisions', requirePermission('quotations', 'edit')
         it.extended_mat_sell, it.extended_lbr_sell, it.extended_selling,
         it.extended_mat_cost, it.extended_lbr_cost, it.extended_cost, it.gross_profit,
         it.override_mat_rate ?? null, it.override_lbr_rate ?? null, it.override_reason || '',
-        it.catalog_item_id ?? null, it.supplier_ref || '', it.sort_order
+        it.catalog_item_id ?? null, it.supplier_ref || '',
+        it.source_assembly_id ?? null, it.source_assembly_code || '', it.source_assembly_version ?? null,
+        it.supplier_id ?? null, it.supplier_price_id ?? null, it.component_type || '', it.calc_basis || '',
+        it.consumption_rate ?? null, it.wastage_pct ?? null, it.measurement_qty ?? null, it.formula_text || '',
+        it.sort_order
       );
       itemMap.set(it.id, Number(itRes.lastInsertRowid));
     }

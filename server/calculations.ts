@@ -388,7 +388,7 @@ export function getProjectFinancialSummary(projectId: number): ProjectFinancialS
     .prepare(
       `SELECT COALESCE(SUM(MAX(0, commitment_amount - settled_amount)), 0) AS total
        FROM purchase_requests
-       WHERE project_id = ? AND status IN ('approved', 'for_procurement', 'ordered', 'partially_delivered')`
+       WHERE project_id = ? AND status IN ('approved', 'partially_approved', 'for_procurement', 'ordered', 'partially_delivered')`
     )
     .get(projectId) as { total: number };
 

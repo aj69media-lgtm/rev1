@@ -12,6 +12,7 @@ import {
   GitPullRequest,
   Globe,
   HardHat,
+  Layers,
   LogOut,
   Menu,
   Package,
@@ -30,12 +31,14 @@ export type NavSection =
   | 'dashboard'
   | 'projects'
   | 'tasks'
+  | 'liquidations'
   | 'procurement'
   | 'personnel'
   | 'equipment'
   | 'revisions'
   | 'reports'
   | 'quotations'
+  | 'catalog'
   | 'admin';
 
 interface AppShellProps {
@@ -102,6 +105,12 @@ export const AppShell: React.FC<AppShellProps> = ({
           visible: hasPerm('tasks', 'view'),
         },
         {
+          id: 'liquidations',
+          label: 'Cash Liquidations',
+          icon: <Shield className="h-4 w-4" />,
+          visible: hasPerm('financials', 'view'),
+        },
+        {
           id: 'procurement',
           label: 'Procurement & PRs',
           icon: <ShoppingCart className="h-4 w-4" />,
@@ -147,6 +156,12 @@ export const AppShell: React.FC<AppShellProps> = ({
           icon: <Calculator className="h-4 w-4" />,
           visible: hasPerm('quotations', 'view'),
         },
+        {
+          id: 'catalog',
+          label: 'Catalog of Works Management',
+          icon: <Layers className="h-4 w-4" />,
+          visible: hasPerm('catalog', 'view'),
+        },
       ],
     },
     {
@@ -166,12 +181,14 @@ export const AppShell: React.FC<AppShellProps> = ({
     dashboard: 'Executive Dashboard',
     projects: selectedProjectId ? 'Project Workspace' : 'Projects Directory',
     tasks: 'Tasks Queue',
+    liquidations: 'Cash Liquidations & Receipt Review',
     procurement: 'Procurement & Purchase Requests',
     personnel: 'Personnel & Attendance',
     equipment: 'Equipment & Inventory',
     revisions: 'Client Revision Requests',
     reports: 'Management Reports & Export',
     quotations: 'REV1 Quotation & Estimating',
+    catalog: 'Catalog of Works Management',
     admin: 'System Administration & Maintenance',
   };
 

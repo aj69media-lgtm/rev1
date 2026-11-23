@@ -1067,6 +1067,383 @@ const MIGRATIONS: Array<{ version: string; name: string; sql: string }> = [
       WHERE slug = 'quotations';
     `,
   },
+  {
+    version: '008',
+    name: 'catalog_of_works_and_suppliers',
+    sql: `
+      -- Register Catalog of Works Management module
+      INSERT OR IGNORE INTO modules (slug, name, description, version, dependencies_json, required_permissions_json, is_enabled)
+      VALUES (
+        'catalog',
+        'Catalog of Works Management',
+        'Master Individual Items Catalog, Configurable Work Categories, Reusable Sets of Works, Version Control & Supplier Pricing.',
+        '1.0.0',
+        '["quotations"]',
+        '["view","create_item","edit_item","manage_categories","create_assembly","edit_assembly","duplicate_assembly","archive_record","restore_record","manage_suppliers","manage_supplier_prices","override_cost","view_internal_costing","request_item"]',
+        1
+      );
+
+      -- Extend Individual Items Catalog (note SQLite constant default rule on ALTER TABLE)
+      ALTER TABLE quotation_catalog_items ADD COLUMN item_type TEXT NOT NULL DEFAULT 'Material';
+      ALTER TABLE quotation_catalog_items ADD COLUMN archived_at TEXT DEFAULT NULL;
+      ALTER TABLE quotation_catalog_items ADD COLUMN archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE quotation_catalog_items ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+      UPDATE quotation_catalog_items SET created_at = updated_at WHERE created_at = '';
+
+      -- Master Suppliers / Vendors Directory
+      CREATE TABLE IF NOT EXISTS suppliers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        contact_person TEXT DEFAULT '',
+        email TEXT DEFAULT '',
+        phone TEXT DEFAULT '',
+        address TEXT DEFAULT '',
+        category_tags TEXT DEFAULT '',
+        payment_terms TEXT DEFAULT '30 Days',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        notes TEXT DEFAULT '',
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      -- Historical & Active Supplier Material Price Records
+      CREATE TABLE IF NOT EXISTS catalog_item_supplier_prices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        catalog_item_id INTEGER NOT NULL REFERENCES quotation_catalog_items(id) ON DELETE CASCADE,
+        supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+        supplier_item_ref TEXT DEFAULT '',
+        brand TEXT DEFAULT '',
+        specifications TEXT DEFAULT '',
+        unit TEXT NOT NULL DEFAULT 'pcs',
+        unit_price REAL NOT NULL DEFAULT 0,
+        effective_date TEXT NOT NULL DEFAULT (date('now')),
+        valid_until TEXT DEFAULT NULL,
+        attachment_id INTEGER DEFAULT NULL,
+        remarks TEXT DEFAULT '',
+        is_preferred INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      -- Reusable Sets of Works (Construction Assemblies)
+      CREATE TABLE IF NOT EXISTS work_assemblies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assembly_code TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        category_id INTEGER REFERENCES quotation_categories(id) ON DELETE SET NULL,
+        category_name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        specifications TEXT DEFAULT '',
+        unit TEXT NOT NULL DEFAULT 'sq.m',
+        default_calc_method TEXT NOT NULL DEFAULT 'per_sqm',
+        default_qty REAL NOT NULL DEFAULT 1,
+        labor_requirements TEXT DEFAULT '',
+        installation_instructions TEXT DEFAULT '',
+        notes TEXT DEFAULT '',
+        current_version INTEGER NOT NULL DEFAULT 1,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        archived_at TEXT DEFAULT NULL,
+        archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      -- Assembly Component Lines
+      CREATE TABLE IF NOT EXISTS work_assembly_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assembly_id INTEGER NOT NULL REFERENCES work_assemblies(id) ON DELETE CASCADE,
+        catalog_item_id INTEGER REFERENCES quotation_catalog_items(id) ON DELETE SET NULL,
+        component_type TEXT NOT NULL DEFAULT 'Material',
+        item_code TEXT DEFAULT '',
+        item_name TEXT NOT NULL,
+        specification TEXT DEFAULT '',
+        unit TEXT NOT NULL DEFAULT 'pcs',
+        calc_basis TEXT NOT NULL DEFAULT 'per_unit',
+        consumption_rate REAL NOT NULL DEFAULT 1,
+        wastage_pct REAL NOT NULL DEFAULT 0,
+        preferred_supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+        notes TEXT DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0
+      );
+
+      -- Immutable Assembly Version Snapshots
+      CREATE TABLE IF NOT EXISTS work_assembly_versions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        assembly_id INTEGER NOT NULL REFERENCES work_assemblies(id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL,
+        change_summary TEXT DEFAULT '',
+        snapshot_json TEXT NOT NULL,
+        changed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(assembly_id, version_number)
+      );
+
+      -- Estimator Missing Item / Catalog Modification Requests
+      CREATE TABLE IF NOT EXISTS catalog_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_type TEXT NOT NULL DEFAULT 'new_item',
+        requested_name TEXT NOT NULL,
+        category TEXT DEFAULT '',
+        item_type TEXT NOT NULL DEFAULT 'Material',
+        specification TEXT DEFAULT '',
+        suggested_unit TEXT DEFAULT 'pcs',
+        suggested_supplier TEXT DEFAULT '',
+        estimated_price REAL NOT NULL DEFAULT 0,
+        notes TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        review_notes TEXT DEFAULT '',
+        created_item_id INTEGER REFERENCES quotation_catalog_items(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        reviewed_at TEXT DEFAULT NULL
+      );
+
+      -- Protected Private File Attachments (shared foundation across Catalog, Liquidation, PR, Tasks)
+      CREATE TABLE IF NOT EXISTS protected_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        file_name TEXT NOT NULL,
+        stored_path TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        is_locked INTEGER NOT NULL DEFAULT 0,
+        uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cat_supplier_prices ON catalog_item_supplier_prices(catalog_item_id, supplier_id, is_active);
+      CREATE INDEX IF NOT EXISTS idx_work_assemblies_cat ON work_assemblies(category_name, is_active);
+      CREATE INDEX IF NOT EXISTS idx_work_assembly_items_asm ON work_assembly_items(assembly_id, sort_order);
+      CREATE INDEX IF NOT EXISTS idx_protected_attachments_ent ON protected_attachments(entity_type, entity_id);
+    `,
+  },
+  {
+    version: '009',
+    name: 'quotation_work_package_snapshots',
+    sql: `
+      ALTER TABLE quotation_items ADD COLUMN source_assembly_id INTEGER DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN source_assembly_code TEXT DEFAULT '';
+      ALTER TABLE quotation_items ADD COLUMN source_assembly_version INTEGER DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN supplier_id INTEGER DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN supplier_price_id INTEGER DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN component_type TEXT DEFAULT '';
+      ALTER TABLE quotation_items ADD COLUMN calc_basis TEXT DEFAULT '';
+      ALTER TABLE quotation_items ADD COLUMN consumption_rate REAL DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN wastage_pct REAL DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN measurement_qty REAL DEFAULT NULL;
+      ALTER TABLE quotation_items ADD COLUMN formula_text TEXT DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_quote_items_asm ON quotation_items(source_assembly_id);
+    `,
+  },
+  {
+    version: '010',
+    name: 'pr_multi_item_liquidation_task_verification',
+    sql: `
+      -- 1. Shared Protected Attachments extensions
+      ALTER TABLE protected_attachments ADD COLUMN project_id INTEGER DEFAULT NULL;
+      ALTER TABLE protected_attachments ADD COLUMN category TEXT DEFAULT '';
+      ALTER TABLE protected_attachments ADD COLUMN caption TEXT DEFAULT '';
+      ALTER TABLE protected_attachments ADD COLUMN thumbnail_path TEXT DEFAULT '';
+      ALTER TABLE protected_attachments ADD COLUMN is_amended INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE protected_attachments ADD COLUMN amendment_note TEXT DEFAULT '';
+      ALTER TABLE protected_attachments ADD COLUMN amended_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE protected_attachments ADD COLUMN amended_at TEXT DEFAULT NULL;
+      CREATE INDEX IF NOT EXISTS idx_protected_attachments_proj ON protected_attachments(project_id, entity_type);
+
+      -- 2. Multi-Item Purchase Requests & Procurement Traceability
+      ALTER TABLE purchase_requests ADD COLUMN requesting_department TEXT DEFAULT 'Operations';
+      ALTER TABLE purchase_requests ADD COLUMN site_location TEXT DEFAULT '';
+      ALTER TABLE purchase_requests ADD COLUMN preferred_supplier_id INTEGER DEFAULT NULL;
+      ALTER TABLE purchase_requests ADD COLUMN preferred_supplier_name TEXT DEFAULT '';
+      ALTER TABLE purchase_requests ADD COLUMN item_count INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE purchase_requests ADD COLUMN approved_total_cost REAL NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS purchase_request_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pr_id INTEGER NOT NULL REFERENCES purchase_requests(id) ON DELETE CASCADE,
+        catalog_item_id INTEGER DEFAULT NULL,
+        inventory_item_id INTEGER DEFAULT NULL,
+        item_code TEXT DEFAULT '',
+        item_description TEXT NOT NULL,
+        specifications TEXT DEFAULT '',
+        category TEXT NOT NULL DEFAULT 'Materials',
+        requested_qty REAL NOT NULL DEFAULT 1,
+        approved_qty REAL NOT NULL DEFAULT 0,
+        ordered_qty REAL NOT NULL DEFAULT 0,
+        delivered_qty REAL NOT NULL DEFAULT 0,
+        unit TEXT NOT NULL DEFAULT 'pcs',
+        estimated_unit_price REAL NOT NULL DEFAULT 0,
+        estimated_total REAL NOT NULL DEFAULT 0,
+        approved_total REAL NOT NULL DEFAULT 0,
+        preferred_supplier_id INTEGER DEFAULT NULL,
+        preferred_supplier_name TEXT DEFAULT '',
+        item_status TEXT NOT NULL DEFAULT 'pending',
+        approver_remarks TEXT DEFAULT '',
+        remarks TEXT DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_pr_items_pr ON purchase_request_items(pr_id, sort_order);
+
+      -- Backfill existing single-item purchase requests into purchase_request_items
+      INSERT INTO purchase_request_items (
+        pr_id, item_code, item_description, specifications, category,
+        requested_qty, approved_qty, ordered_qty, delivered_qty, unit,
+        estimated_unit_price, estimated_total, approved_total,
+        preferred_supplier_name, item_status, remarks, sort_order
+      )
+      SELECT
+        pr.id,
+        '',
+        pr.item_description,
+        '',
+        COALESCE(NULLIF(pr.category, ''), 'Materials'),
+        pr.quantity,
+        CASE WHEN pr.status IN ('approved', 'for_procurement', 'ordered', 'partially_delivered', 'delivered') THEN pr.quantity ELSE 0 END,
+        CASE WHEN pr.status IN ('ordered', 'partially_delivered', 'delivered') THEN pr.quantity ELSE 0 END,
+        CASE WHEN pr.status = 'delivered' THEN pr.quantity ELSE 0 END,
+        COALESCE(NULLIF(pr.unit, ''), 'pcs'),
+        pr.estimated_unit_cost,
+        pr.estimated_total_cost,
+        CASE WHEN pr.status IN ('approved', 'for_procurement', 'ordered', 'partially_delivered', 'delivered') THEN pr.estimated_total_cost ELSE 0 END,
+        COALESCE(pr.suggested_supplier, ''),
+        CASE
+          WHEN pr.status IN ('approved', 'for_procurement') THEN 'approved'
+          WHEN pr.status = 'rejected' THEN 'rejected'
+          WHEN pr.status = 'ordered' THEN 'ordered'
+          WHEN pr.status = 'partially_delivered' THEN 'partially_delivered'
+          WHEN pr.status = 'delivered' THEN 'delivered'
+          ELSE 'pending'
+        END,
+        COALESCE(pr.remarks, ''),
+        1
+      FROM purchase_requests pr
+      WHERE NOT EXISTS (SELECT 1 FROM purchase_request_items pri WHERE pri.pr_id = pr.id);
+
+      UPDATE purchase_requests
+      SET item_count = COALESCE((SELECT COUNT(*) FROM purchase_request_items pri WHERE pri.pr_id = purchase_requests.id), 1),
+          preferred_supplier_name = CASE WHEN preferred_supplier_name = '' THEN suggested_supplier ELSE preferred_supplier_name END,
+          approved_total_cost = CASE WHEN status IN ('approved', 'partially_approved', 'for_procurement', 'ordered', 'partially_delivered', 'delivered') THEN COALESCE(NULLIF(commitment_amount, 0), estimated_total_cost) ELSE 0 END;
+
+      ALTER TABLE purchase_orders ADD COLUMN supplier_id INTEGER DEFAULT NULL;
+      ALTER TABLE purchase_orders ADD COLUMN discrepancy_notes TEXT DEFAULT '';
+      ALTER TABLE purchase_orders ADD COLUMN remarks TEXT DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS purchase_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+        pr_id INTEGER NOT NULL REFERENCES purchase_requests(id) ON DELETE CASCADE,
+        pr_item_id INTEGER REFERENCES purchase_request_items(id) ON DELETE SET NULL,
+        catalog_item_id INTEGER DEFAULT NULL,
+        inventory_item_id INTEGER DEFAULT NULL,
+        item_code TEXT DEFAULT '',
+        item_description TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT 'pcs',
+        approved_qty REAL NOT NULL DEFAULT 0,
+        ordered_qty REAL NOT NULL DEFAULT 0,
+        delivered_qty REAL NOT NULL DEFAULT 0,
+        actual_unit_price REAL NOT NULL DEFAULT 0,
+        actual_total REAL NOT NULL DEFAULT 0,
+        supplier_id INTEGER DEFAULT NULL,
+        supplier_name TEXT DEFAULT '',
+        discrepancy_qty REAL NOT NULL DEFAULT 0,
+        discrepancy_notes TEXT DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'ordered'
+      );
+
+      CREATE TABLE IF NOT EXISTS purchase_order_receipts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        po_id INTEGER NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+        pr_id INTEGER NOT NULL REFERENCES purchase_requests(id) ON DELETE CASCADE,
+        pr_item_id INTEGER REFERENCES purchase_request_items(id) ON DELETE SET NULL,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        inventory_item_id INTEGER REFERENCES inventory_items(id) ON DELETE SET NULL,
+        delivered_qty REAL NOT NULL DEFAULT 0,
+        accepted_qty REAL NOT NULL DEFAULT 0,
+        rejected_qty REAL NOT NULL DEFAULT 0,
+        actual_unit_cost REAL NOT NULL DEFAULT 0,
+        actual_total_cost REAL NOT NULL DEFAULT 0,
+        delivery_date TEXT NOT NULL,
+        dr_number TEXT DEFAULT '',
+        invoice_number TEXT DEFAULT '',
+        discrepancy_notes TEXT DEFAULT '',
+        added_to_warehouse INTEGER NOT NULL DEFAULT 0,
+        received_by INTEGER NOT NULL REFERENCES users(id),
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      -- 3. Financial Entry & Cash Liquidation Evidence / Exception / Audit Trail
+      ALTER TABLE expenses ADD COLUMN employee_name TEXT DEFAULT '';
+      ALTER TABLE expenses ADD COLUMN submitted_at TEXT DEFAULT NULL;
+      ALTER TABLE expenses ADD COLUMN no_receipt_exception INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE expenses ADD COLUMN exception_reason TEXT DEFAULT '';
+      ALTER TABLE expenses ADD COLUMN exception_status TEXT NOT NULL DEFAULT 'none';
+      ALTER TABLE expenses ADD COLUMN exception_approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE expenses ADD COLUMN exception_approved_at TEXT DEFAULT NULL;
+      ALTER TABLE expenses ADD COLUMN exception_remarks TEXT DEFAULT '';
+      ALTER TABLE expenses ADD COLUMN reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE expenses ADD COLUMN reviewed_at TEXT DEFAULT NULL;
+      ALTER TABLE expenses ADD COLUMN approved_at TEXT DEFAULT NULL;
+      ALTER TABLE expenses ADD COLUMN rejection_reason TEXT DEFAULT '';
+      ALTER TABLE expenses ADD COLUMN amendment_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE expenses ADD COLUMN is_system_settlement INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS expense_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        expense_id INTEGER NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+        actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        previous_status TEXT DEFAULT '',
+        new_status TEXT DEFAULT '',
+        remarks TEXT DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_expense_history_exp ON expense_history(expense_id, id);
+
+      INSERT OR IGNORE INTO system_settings (setting_key, setting_value)
+      VALUES ('allow_self_liquidation_approval', '0');
+
+      -- 4. Task Completion Photographic Proof & Supervisor Verification
+      ALTER TABLE tasks ADD COLUMN completion_status TEXT NOT NULL DEFAULT 'none';
+      ALTER TABLE tasks ADD COLUMN completion_date TEXT DEFAULT NULL;
+      ALTER TABLE tasks ADD COLUMN completion_remarks TEXT DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN submitted_for_review_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE tasks ADD COLUMN submitted_for_review_at TEXT DEFAULT NULL;
+      ALTER TABLE tasks ADD COLUMN verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+      ALTER TABLE tasks ADD COLUMN verified_at TEXT DEFAULT NULL;
+      ALTER TABLE tasks ADD COLUMN verification_remarks TEXT DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN rejection_reason TEXT DEFAULT '';
+      ALTER TABLE tasks ADD COLUMN evidence_locked INTEGER NOT NULL DEFAULT 0;
+
+      UPDATE tasks
+      SET completion_status = 'verified',
+          completion_date = COALESCE(completion_date, substr(completed_at, 1, 10), date('now'))
+      WHERE status = 'completed' AND completion_status = 'none';
+
+      CREATE TABLE IF NOT EXISTS task_completion_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        previous_status TEXT DEFAULT '',
+        new_status TEXT DEFAULT '',
+        completion_status TEXT DEFAULT '',
+        remarks TEXT DEFAULT '',
+        attachment_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_completion_history_task ON task_completion_history(task_id, id);
+    `,
+  },
 ];
 
 export function seedDefaultRolePermissions(): void {
@@ -1091,6 +1468,7 @@ export function seedDefaultRolePermissions(): void {
     'reports',
     'client_portal',
     'quotations',
+    'catalog',
     'admin',
   ];
   const allActions = [
@@ -1104,6 +1482,16 @@ export function seedDefaultRolePermissions(): void {
     'reject',
     'export',
     'publish_client',
+  ];
+  const financialFullActions = [
+    ...allActions,
+    'approve_exception',
+    'amend_approved',
+  ];
+  const taskFullActions = [
+    ...allActions,
+    'verify',
+    'amend_evidence',
   ];
   const quotationFullActions = [
     'view',
@@ -1122,6 +1510,22 @@ export function seedDefaultRolePermissions(): void {
     'convert_project',
     'manage_settings',
   ];
+  const catalogFullActions = [
+    'view',
+    'create_item',
+    'edit_item',
+    'manage_categories',
+    'create_assembly',
+    'edit_assembly',
+    'duplicate_assembly',
+    'archive_record',
+    'restore_record',
+    'manage_suppliers',
+    'manage_supplier_prices',
+    'override_cost',
+    'view_internal_costing',
+    'request_item',
+  ];
 
   const tx = db.transaction(() => {
     for (const role of roles) {
@@ -1131,7 +1535,16 @@ export function seedDefaultRolePermissions(): void {
             insert.run(role.id, 'admin', 'view');
             continue;
           }
-          const acts = m === 'quotations' ? quotationFullActions : allActions;
+          const acts =
+            m === 'quotations'
+              ? quotationFullActions
+              : m === 'catalog'
+              ? catalogFullActions
+              : m === 'financials'
+              ? financialFullActions
+              : m === 'tasks'
+              ? taskFullActions
+              : allActions;
           for (const a of acts) {
             insert.run(role.id, m, a);
           }
@@ -1141,6 +1554,12 @@ export function seedDefaultRolePermissions(): void {
           const acts =
             m === 'quotations'
               ? ['view', 'create', 'edit', 'submit', 'review', 'approve', 'export', 'view_internal_costing', 'apply_discount', 'convert_project']
+              : m === 'catalog'
+              ? catalogFullActions
+              : m === 'financials'
+              ? financialFullActions
+              : m === 'tasks'
+              ? taskFullActions
               : allActions;
           for (const a of acts) {
             insert.run(role.id, m, a);
@@ -1152,20 +1571,41 @@ export function seedDefaultRolePermissions(): void {
             insert.run(role.id, m, a);
           }
         }
-        for (const a of ['view', 'create', 'edit', 'submit', 'view_internal_costing', 'export']) {
-          insert.run(role.id, 'quotations', a);
+        if (role.slug === 'project_engineer') {
+          insert.run(role.id, 'tasks', 'verify');
+          for (const a of ['view', 'create', 'edit', 'submit', 'view_internal_costing', 'export']) {
+            insert.run(role.id, 'quotations', a);
+          }
+          for (const a of ['view', 'view_internal_costing', 'request_item', 'duplicate_assembly']) {
+            insert.run(role.id, 'catalog', a);
+          }
+        } else {
+          for (const a of ['view', 'request_item']) {
+            insert.run(role.id, 'catalog', a);
+          }
         }
         insert.run(role.id, 'procurement', 'view');
         insert.run(role.id, 'procurement', 'create');
         insert.run(role.id, 'procurement', 'submit');
         insert.run(role.id, 'personnel', 'view');
         insert.run(role.id, 'financials', 'view');
+        insert.run(role.id, 'financials', 'create');
+        insert.run(role.id, 'financials', 'submit');
       } else if (role.slug === 'site_supervisor') {
         for (const m of ['projects', 'schedules', 'dpr', 'tasks', 'personnel', 'equipment', 'inventory', 'quality', 'communications']) {
           for (const a of ['view', 'create', 'edit', 'submit']) {
             insert.run(role.id, m, a);
           }
         }
+        for (const a of ['review', 'approve', 'verify']) {
+          insert.run(role.id, 'tasks', a);
+        }
+        insert.run(role.id, 'financials', 'view');
+        insert.run(role.id, 'financials', 'create');
+        insert.run(role.id, 'financials', 'submit');
+        insert.run(role.id, 'procurement', 'view');
+        insert.run(role.id, 'procurement', 'create');
+        insert.run(role.id, 'procurement', 'submit');
       } else if (role.slug === 'procurement_officer') {
         for (const m of ['projects', 'procurement', 'inventory', 'documents', 'communications', 'reports']) {
           for (const a of ['view', 'create', 'edit', 'submit', 'review', 'approve', 'export']) {
@@ -1173,17 +1613,23 @@ export function seedDefaultRolePermissions(): void {
           }
         }
         insert.run(role.id, 'financials', 'view');
-        // Procurement officer may view client-facing quote line items for sourcing reference, without internal GP/costing by default
         insert.run(role.id, 'quotations', 'view');
+        for (const a of ['view', 'create_item', 'edit_item', 'manage_suppliers', 'manage_supplier_prices', 'view_internal_costing', 'request_item']) {
+          insert.run(role.id, 'catalog', a);
+        }
       } else if (role.slug === 'finance_officer') {
         for (const m of ['projects', 'financials', 'procurement', 'documents', 'communications', 'reports']) {
           for (const a of ['view', 'create', 'edit', 'review', 'approve', 'reject', 'export']) {
             insert.run(role.id, m, a);
           }
         }
+        insert.run(role.id, 'financials', 'approve_exception');
+        insert.run(role.id, 'financials', 'amend_approved');
         for (const a of ['view', 'review', 'approve', 'reject', 'export', 'view_internal_costing', 'approve_discount']) {
           insert.run(role.id, 'quotations', a);
         }
+        insert.run(role.id, 'catalog', 'view');
+        insert.run(role.id, 'catalog', 'view_internal_costing');
       } else if (role.slug === 'hr_admin') {
         for (const m of ['projects', 'personnel', 'documents', 'communications', 'reports']) {
           for (const a of ['view', 'create', 'edit', 'export']) {
@@ -1196,18 +1642,25 @@ export function seedDefaultRolePermissions(): void {
             insert.run(role.id, m, a);
           }
         }
+        insert.run(role.id, 'catalog', 'view');
+        insert.run(role.id, 'catalog', 'request_item');
       } else if (role.slug === 'qc_personnel') {
         for (const m of ['projects', 'quality', 'tasks', 'dpr', 'documents', 'communications']) {
           for (const a of ['view', 'create', 'edit', 'submit', 'approve', 'reject']) {
             insert.run(role.id, m, a);
           }
         }
+        insert.run(role.id, 'tasks', 'verify');
       } else if (role.slug === 'field_personnel') {
         for (const m of ['projects', 'tasks', 'dpr', 'communications']) {
           insert.run(role.id, m, 'view');
         }
         insert.run(role.id, 'tasks', 'edit');
+        insert.run(role.id, 'tasks', 'submit');
         insert.run(role.id, 'dpr', 'create');
+        insert.run(role.id, 'financials', 'view');
+        insert.run(role.id, 'financials', 'create');
+        insert.run(role.id, 'financials', 'submit');
       } else if (role.slug === 'client_rep') {
         insert.run(role.id, 'client_portal', 'view');
         insert.run(role.id, 'client_portal', 'create');

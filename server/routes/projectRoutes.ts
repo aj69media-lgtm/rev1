@@ -3,12 +3,18 @@ import {
   type AuthenticatedRequest,
   canAccessProject,
   getAccessibleProjectIds,
+  hasPermission,
   logAudit,
   requireAuth,
   requireInternalUser,
   requireModule,
   requirePermission,
 } from '../auth.ts';
+import {
+  getAttachmentsForEntity,
+  lockAttachments,
+  saveBase64Attachment,
+} from '../attachments.ts';
 import {
   computeCriticalPath,
   getProjectEvmMetrics,
@@ -1109,9 +1115,73 @@ router.post('/dpr/:id/publish-client', requireModule('dpr'), requirePermission('
 });
 
 // --- Tasks Management ---
+function hydrateTasksWithEvidence(tasks: any[]) {
+  if (tasks.length === 0) return [];
+  const taskIds = tasks.map((t) => t.id);
+  const attRows = db
+    .prepare(
+      `SELECT pa.*, u.full_name AS uploaded_by_name
+       FROM protected_attachments pa
+       LEFT JOIN users u ON u.id = pa.uploaded_by
+       WHERE pa.entity_id IN (${taskIds.map(() => '?').join(',')})
+         AND pa.entity_type IN ('task_completion_photo', 'task_completion_doc')
+       ORDER BY pa.id ASC`
+    )
+    .all(...taskIds) as any[];
+
+  return tasks.map((t) => {
+    const atts = attRows
+      .filter((a) => a.entity_id === t.id)
+      .map((a) => ({
+        id: a.id,
+        entity_type: a.entity_type,
+        entity_id: a.entity_id,
+        project_id: a.project_id ?? null,
+        category: a.category || '',
+        caption: a.caption || '',
+        file_name: a.file_name,
+        mime_type: a.mime_type,
+        file_size: a.file_size,
+        is_locked: Number(a.is_locked || 0),
+        is_amended: Number(a.is_amended || 0),
+        amendment_note: a.amendment_note || '',
+        uploaded_by: a.uploaded_by ?? null,
+        uploaded_by_name: a.uploaded_by_name || undefined,
+        created_at: a.created_at,
+        is_image: String(a.mime_type || '').startsWith('image/'),
+      }));
+    const photos = atts.filter((a) => a.entity_type === 'task_completion_photo');
+    const docs = atts.filter((a) => a.entity_type === 'task_completion_doc');
+    return {
+      ...t,
+      attachments: atts,
+      photo_count: photos.length,
+      doc_count: docs.length,
+    };
+  });
+}
+
+function getProjectTaskReviewers(projectId: number, excludeUserId?: number): number[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT u.id
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN project_assignments pa ON pa.user_id = u.id AND pa.project_id = ?
+       WHERE u.is_active = 1
+         AND (
+           r.slug IN ('system_admin', 'executive', 'general_manager')
+           OR (r.slug IN ('project_manager', 'project_engineer', 'site_supervisor', 'qc_personnel') AND pa.project_id = ?)
+         )`
+    )
+    .all(projectId, projectId) as Array<{ id: number }>;
+  return rows.map((r) => r.id).filter((id) => id !== excludeUserId);
+}
+
 router.get('/tasks', requireModule('tasks'), requirePermission('tasks', 'view'), (req: AuthenticatedRequest, res) => {
   const access = getAccessibleProjectIds(req.user!);
   const projectId = req.query.projectId ? Number(req.query.projectId) : null;
+  const statusFilter = typeof req.query.status === 'string' ? req.query.status : '';
 
   if (projectId && !canAccessProject(req.user!, projectId)) {
     res.status(403).json({ error: 'Project access denied' });
@@ -1131,24 +1201,86 @@ router.get('/tasks', requireModule('tasks'), requirePermission('tasks', 'view'),
     whereSql += ` AND t.project_id IN (${access.map(() => '?').join(',')})`;
     params.push(...access);
   }
+  if (statusFilter && statusFilter !== 'all') {
+    whereSql += ' AND t.status = ?';
+    params.push(statusFilter);
+  }
 
   const tasks = db
     .prepare(
       `SELECT t.*, p.name AS project_name, p.ref_number AS project_ref,
               COALESCE(per.full_name, ass.full_name, NULLIF(t.assigned_team, '')) AS assigned_to_name,
               per.position AS assigned_position,
-              sup.full_name AS supervisor_name
+              sup.full_name AS supervisor_name,
+              subm.full_name AS submitted_for_review_by_name,
+              ver.full_name AS verified_by_name
        FROM tasks t
        JOIN projects p ON p.id = t.project_id
        LEFT JOIN users ass ON ass.id = t.assigned_to
        LEFT JOIN personnel per ON per.id = t.assigned_personnel_id
        LEFT JOIN users sup ON sup.id = t.supervisor_id
+       LEFT JOIN users subm ON subm.id = t.submitted_for_review_by
+       LEFT JOIN users ver ON ver.id = t.verified_by
        ${whereSql}
-       ORDER BY t.deadline ASC, t.id DESC`
+       ORDER BY CASE WHEN t.status = 'for_review' THEN 0 ELSE 1 END, t.deadline ASC, t.id DESC`
     )
-    .all(...params);
+    .all(...params) as any[];
 
-  res.json({ tasks });
+  res.json({ tasks: hydrateTasksWithEvidence(tasks) });
+});
+
+router.get('/tasks/:id/details', requireModule('tasks'), requirePermission('tasks', 'view'), (req: AuthenticatedRequest, res) => {
+  const taskId = Number(req.params.id);
+  const task = db
+    .prepare(
+      `SELECT t.*, p.name AS project_name, p.ref_number AS project_ref,
+              COALESCE(per.full_name, ass.full_name, NULLIF(t.assigned_team, '')) AS assigned_to_name,
+              per.position AS assigned_position,
+              sup.full_name AS supervisor_name,
+              subm.full_name AS submitted_for_review_by_name,
+              ver.full_name AS verified_by_name
+       FROM tasks t
+       JOIN projects p ON p.id = t.project_id
+       LEFT JOIN users ass ON ass.id = t.assigned_to
+       LEFT JOIN personnel per ON per.id = t.assigned_personnel_id
+       LEFT JOIN users sup ON sup.id = t.supervisor_id
+       LEFT JOIN users subm ON subm.id = t.submitted_for_review_by
+       LEFT JOIN users ver ON ver.id = t.verified_by
+       WHERE t.id = ?`
+    )
+    .get(taskId) as any;
+
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, task.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+
+  const [hydrated] = hydrateTasksWithEvidence([task]);
+  const history = db
+    .prepare(
+      `SELECT tch.*, u.full_name AS actor_name, r.name AS actor_role
+       FROM task_completion_history tch
+       LEFT JOIN users u ON u.id = tch.actor_id
+       LEFT JOIN roles r ON r.id = u.role_id
+       WHERE tch.task_id = ?
+       ORDER BY tch.id DESC`
+    )
+    .all(taskId);
+  const comments = db
+    .prepare(
+      `SELECT tc.*, u.full_name AS author_name, r.name AS author_role
+       FROM task_comments tc
+       JOIN users u ON u.id = tc.user_id
+       JOIN roles r ON r.id = u.role_id
+       WHERE tc.task_id = ? ORDER BY tc.id ASC`
+    )
+    .all(taskId);
+
+  res.json({ task: hydrated, history, comments });
 });
 
 router.post('/projects/:id/tasks', requireModule('tasks'), requirePermission('tasks', 'create'), (req: AuthenticatedRequest, res) => {
@@ -1161,6 +1293,10 @@ router.post('/projects/:id/tasks', requireModule('tasks'), requirePermission('ta
   const b = req.body || {};
   if (!b.title || !b.startDate || !b.deadline) {
     res.status(400).json({ error: 'Title, start date, and deadline are required' });
+    return;
+  }
+  if (String(b.status || '').toLowerCase() === 'completed') {
+    res.status(400).json({ error: 'Tasks cannot be created directly as Completed without completion photographs and verification.' });
     return;
   }
 
@@ -1196,35 +1332,43 @@ router.post('/projects/:id/tasks', requireModule('tasks'), requirePermission('ta
     : 'medium';
 
   const refNum = `TSK-${Date.now().toString().slice(-6)}`;
-  const info = db
-    .prepare(
-      `INSERT INTO tasks (
-        ref_number, project_id, title, description, assigned_to, assigned_personnel_id, assigned_team,
-        supervisor_id, reviewer_id, priority, start_date, deadline, dependencies_json,
-        progress_pct, status, client_idempotency_key, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      refNum,
-      projectId,
-      String(b.title).trim(),
-      String(b.description || '').trim(),
-      assignedUserId,
-      assignedPersonnelId,
-      assignedTeamLabel,
-      b.supervisorId ? Number(b.supervisorId) : req.user!.id,
-      b.reviewerId ? Number(b.reviewerId) : req.user!.id,
-      priority,
-      b.startDate,
-      b.deadline,
-      JSON.stringify(Array.isArray(b.dependencies) ? b.dependencies : []),
-      Number(b.progressPct || 0),
-      b.status || 'pending',
-      b.clientIdempotencyKey || null,
-      req.user!.id
-    );
+  const taskId = transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO tasks (
+          ref_number, project_id, title, description, assigned_to, assigned_personnel_id, assigned_team,
+          supervisor_id, reviewer_id, priority, start_date, deadline, dependencies_json,
+          progress_pct, status, client_idempotency_key, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        refNum,
+        projectId,
+        String(b.title).trim(),
+        String(b.description || '').trim(),
+        assignedUserId,
+        assignedPersonnelId,
+        assignedTeamLabel,
+        b.supervisorId ? Number(b.supervisorId) : req.user!.id,
+        b.reviewerId ? Number(b.reviewerId) : req.user!.id,
+        priority,
+        b.startDate,
+        b.deadline,
+        JSON.stringify(Array.isArray(b.dependencies) ? b.dependencies : []),
+        Number(b.progressPct || 0),
+        b.status || 'pending',
+        b.clientIdempotencyKey || null,
+        req.user!.id
+      );
 
-  const taskId = Number(info.lastInsertRowid);
+    const id = Number(info.lastInsertRowid);
+    db.prepare(
+      `INSERT INTO task_completion_history (task_id, actor_id, action, previous_status, new_status, completion_status, remarks)
+       VALUES (?, ?, 'CREATED_TASK', '', ?, 'none', ?)`
+    ).run(id, req.user!.id, b.status || 'pending', `Assigned to ${assignedTeamLabel || 'project team'}`);
+    return id;
+  });
+
   if (assignedUserId) {
     createNotification({
       userId: assignedUserId,
@@ -1260,6 +1404,37 @@ router.patch('/tasks/:id', requireModule('tasks'), requirePermission('tasks', 'e
 
   const b = req.body || {};
   const nextStatus = b.status ?? existing.status;
+
+  if (existing.evidence_locked === 1 && nextStatus !== existing.status && !hasPermission(req.user!, 'tasks', 'verify')) {
+    res.status(403).json({ error: 'Verified completed task cannot be changed without supervisor authorization.' });
+    return;
+  }
+
+  if (nextStatus === 'completed' || nextStatus === 'for_review') {
+    const existingPhotos = getAttachmentsForEntity('task_completion_photo', taskId);
+    if (existingPhotos.length === 0) {
+      res.status(400).json({
+        error: 'A task cannot be marked Completed or submitted for review without at least one completion photograph.',
+        requiresCompletionForm: true,
+      });
+      return;
+    }
+    if (nextStatus === 'completed' && !hasPermission(req.user!, 'tasks', 'verify') && !hasPermission(req.user!, 'tasks', 'approve')) {
+      res.status(403).json({
+        error: 'Supervisor verification is required before a task can be marked Completed. Submit for review instead.',
+        requiresCompletionForm: true,
+      });
+      return;
+    }
+    if (nextStatus === 'completed' && existing.completion_status !== 'verified' && !b.supervisorVerified) {
+      res.status(400).json({
+        error: 'Task completion evidence must be reviewed and approved via Supervisor Verification before becoming Completed — Verified.',
+        requiresVerification: true,
+      });
+      return;
+    }
+  }
+
   const nextPct =
     nextStatus === 'completed'
       ? 100
@@ -1267,16 +1442,25 @@ router.patch('/tasks/:id', requireModule('tasks'), requirePermission('tasks', 'e
       ? Math.min(100, Math.max(0, Number(b.progressPct)))
       : existing.progress_pct;
 
-  db.prepare(
-    `UPDATE tasks SET
-      status = ?,
-      progress_pct = ?,
-      priority = COALESCE(?, priority),
-      deadline = COALESCE(?, deadline),
-      completed_at = CASE WHEN ? = 'completed' THEN datetime('now') ELSE completed_at END,
-      updated_at = datetime('now')
-     WHERE id = ?`
-  ).run(nextStatus, nextPct, b.priority ?? null, b.deadline ?? null, nextStatus, taskId);
+  transaction(() => {
+    db.prepare(
+      `UPDATE tasks SET
+        status = ?,
+        progress_pct = ?,
+        priority = COALESCE(?, priority),
+        deadline = COALESCE(?, deadline),
+        completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, datetime('now')) ELSE completed_at END,
+        updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(nextStatus, nextPct, b.priority ?? null, b.deadline ?? null, nextStatus, taskId);
+
+    if (nextStatus !== existing.status) {
+      db.prepare(
+        `INSERT INTO task_completion_history (task_id, actor_id, action, previous_status, new_status, completion_status, remarks)
+         VALUES (?, ?, 'STATUS_CHANGED', ?, ?, ?, ?)`
+      ).run(taskId, req.user!.id, existing.status, nextStatus, existing.completion_status, String(b.remarks || `Status changed to ${nextStatus}`));
+    }
+  });
 
   emitSyncEvent({
     eventType: 'task:updated',
@@ -1285,7 +1469,371 @@ router.patch('/tasks/:id', requireModule('tasks'), requirePermission('tasks', 'e
     payload: { id: taskId, status: nextStatus, progressPct: nextPct },
   });
 
-  res.json({ ok: true });
+  res.json({ ok: true, status: nextStatus });
+});
+
+router.post('/tasks/:id/submit-completion', requireModule('tasks'), requirePermission('tasks', 'edit'), (req: AuthenticatedRequest, res) => {
+  const taskId = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as any;
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, task.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+  if (task.evidence_locked === 1 && task.status === 'completed') {
+    res.status(403).json({ error: 'This task is already verified and locked.' });
+    return;
+  }
+
+  const b = req.body || {};
+  const completionDate = String(b.completionDate || new Date().toISOString().slice(0, 10)).trim();
+  const completionRemarks = String(b.completionRemarks || '').trim();
+  if (!completionRemarks) {
+    res.status(400).json({ error: 'Actual completion remarks are required' });
+    return;
+  }
+
+  try {
+    const result = transaction(() => {
+      const newlySavedIds: number[] = [];
+      if (Array.isArray(b.photosBase64)) {
+        for (const item of b.photosBase64.slice(0, 10)) {
+          if (!item?.dataUrl) continue;
+          const saved = saveBase64Attachment({
+            dataUrl: item.dataUrl,
+            fileName: item.fileName || `task-${task.ref_number}-proof.jpg`,
+            entityType: 'task_completion_photo',
+            entityId: taskId,
+            projectId: task.project_id,
+            category: 'Completion Photo Proof',
+            caption: item.caption || completionRemarks.slice(0, 180),
+            uploadedBy: req.user!.id,
+          });
+          newlySavedIds.push(saved.id);
+        }
+      }
+      if (Array.isArray(b.docsBase64)) {
+        for (const item of b.docsBase64.slice(0, 5)) {
+          if (!item?.dataUrl) continue;
+          const saved = saveBase64Attachment({
+            dataUrl: item.dataUrl,
+            fileName: item.fileName || `task-${task.ref_number}-doc.pdf`,
+            entityType: 'task_completion_doc',
+            entityId: taskId,
+            projectId: task.project_id,
+            category: 'Supporting Document',
+            caption: item.caption || '',
+            uploadedBy: req.user!.id,
+          });
+          newlySavedIds.push(saved.id);
+        }
+      }
+
+      const allPhotos = getAttachmentsForEntity('task_completion_photo', taskId);
+      if (allPhotos.length === 0) {
+        throw new Error('At least one completion photograph is mandatory before submitting completion for review.');
+      }
+
+      const isResubmit = ['returned', 'additional_photos_requested'].includes(task.completion_status);
+      const actionName = isResubmit ? 'RESUBMITTED_COMPLETION' : 'SUBMITTED_COMPLETION';
+
+      db.prepare(
+        `UPDATE tasks SET
+          status = 'for_review',
+          completion_status = 'awaiting_verification',
+          completion_date = ?,
+          completion_remarks = ?,
+          submitted_for_review_by = ?,
+          submitted_for_review_at = datetime('now'),
+          progress_pct = 100,
+          updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(completionDate, completionRemarks, req.user!.id, taskId);
+
+      db.prepare(
+        `INSERT INTO task_completion_history (
+          task_id, actor_id, action, previous_status, new_status, completion_status, remarks, attachment_ids_json
+        ) VALUES (?, ?, ?, ?, 'for_review', 'awaiting_verification', ?, ?)`
+      ).run(taskId, req.user!.id, actionName, task.status, completionRemarks, JSON.stringify(newlySavedIds));
+
+      return { photoCount: allPhotos.length, newlySavedIds };
+    });
+
+    const recipientSet = new Set<number>(getProjectTaskReviewers(task.project_id, req.user!.id));
+    if (task.supervisor_id && task.supervisor_id !== req.user!.id) recipientSet.add(task.supervisor_id);
+    if (task.reviewer_id && task.reviewer_id !== req.user!.id) recipientSet.add(task.reviewer_id);
+    for (const uid of recipientSet) {
+      createNotification({
+        userId: uid,
+        projectId: task.project_id,
+        type: 'task_completion_submitted',
+        title: `Task Verification Required: ${task.ref_number}`,
+        body: `${req.user!.full_name} submitted ${result.photoCount} completion photo(s) for "${task.title}".`,
+        linkSection: 'tasks',
+      });
+    }
+
+    logAudit({
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'SUBMIT_TASK_COMPLETION',
+      module: 'tasks',
+      recordType: 'task',
+      recordRef: task.ref_number,
+      newValue: { status: 'for_review', completionStatus: 'awaiting_verification', photoCount: result.photoCount },
+      remarks: completionRemarks,
+      ipAddress: req.ip || '',
+    });
+
+    emitSyncEvent({
+      eventType: 'task:submitted_for_review',
+      module: 'tasks',
+      projectId: task.project_id,
+      payload: { id: taskId, status: 'for_review' },
+    });
+
+    res.json({ ok: true, status: 'for_review', completionStatus: 'awaiting_verification', photoCount: result.photoCount });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Unable to submit task completion' });
+  }
+});
+
+router.post('/tasks/:id/verify', requireModule('tasks'), (req: AuthenticatedRequest, res) => {
+  if (!hasPermission(req.user!, 'tasks', 'verify') && !hasPermission(req.user!, 'tasks', 'approve')) {
+    res.status(403).json({ error: 'Supervisor verification permission required' });
+    return;
+  }
+
+  const taskId = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as any;
+  if (!task) {
+    res.status(404).json({ error: 'Task not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, task.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+
+  const { decision, remarks } = req.body || {};
+  const cleanRemarks = String(remarks || '').trim();
+  if (!['approve', 'return_for_correction', 'reject', 'request_photos'].includes(decision)) {
+    res.status(400).json({ error: 'Invalid verification decision' });
+    return;
+  }
+  if (decision !== 'approve' && !cleanRemarks) {
+    res.status(400).json({ error: 'A clear reason or instruction is required when returning, rejecting, or requesting additional photos.' });
+    return;
+  }
+
+  const photos = getAttachmentsForEntity('task_completion_photo', taskId);
+  if (decision === 'approve' && photos.length === 0) {
+    res.status(400).json({ error: 'Cannot approve completion: task has no photographic completion proof attached.' });
+    return;
+  }
+
+  let nextStatus = task.status;
+  let nextCompletionStatus = task.completion_status;
+  let historyAction = 'VERIFIED_COMPLETED';
+
+  transaction(() => {
+    if (decision === 'approve') {
+      nextStatus = 'completed';
+      nextCompletionStatus = 'verified';
+      historyAction = 'VERIFIED_COMPLETED';
+      db.prepare(
+        `UPDATE tasks SET
+          status = 'completed',
+          completion_status = 'verified',
+          verified_by = ?,
+          verified_at = datetime('now'),
+          verification_remarks = ?,
+          rejection_reason = '',
+          completed_at = COALESCE(completed_at, datetime('now')),
+          evidence_locked = 1,
+          progress_pct = 100,
+          updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(req.user!.id, cleanRemarks || 'Verified against completion photo proof', taskId);
+
+      lockAttachments(['task_completion_photo', 'task_completion_doc'], taskId);
+    } else if (decision === 'request_photos') {
+      nextStatus = 'for_review';
+      nextCompletionStatus = 'additional_photos_requested';
+      historyAction = 'ADDITIONAL_PHOTOS_REQUESTED';
+      db.prepare(
+        `UPDATE tasks SET
+          status = 'for_review',
+          completion_status = 'additional_photos_requested',
+          verification_remarks = ?,
+          updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(cleanRemarks, taskId);
+    } else {
+      nextStatus = decision === 'reject' ? 'rejected' : 'in_progress';
+      nextCompletionStatus = 'returned';
+      historyAction = decision === 'reject' ? 'REJECTED_COMPLETION' : 'RETURNED_FOR_CORRECTION';
+      db.prepare(
+        `UPDATE tasks SET
+          status = ?,
+          completion_status = 'returned',
+          rejection_reason = ?,
+          verification_remarks = ?,
+          progress_pct = ?,
+          updated_at = datetime('now')
+         WHERE id = ?`
+      ).run(nextStatus, cleanRemarks, cleanRemarks, decision === 'reject' ? task.progress_pct : 85, taskId);
+    }
+
+    db.prepare(
+      `INSERT INTO task_completion_history (
+        task_id, actor_id, action, previous_status, new_status, completion_status, remarks, attachment_ids_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      taskId,
+      req.user!.id,
+      historyAction,
+      task.status,
+      nextStatus,
+      nextCompletionStatus,
+      cleanRemarks,
+      JSON.stringify(photos.map((p) => p.id))
+    );
+  });
+
+  const notifyUsers = new Set<number>();
+  if (task.assigned_to && task.assigned_to !== req.user!.id) notifyUsers.add(task.assigned_to);
+  if (task.submitted_for_review_by && task.submitted_for_review_by !== req.user!.id) notifyUsers.add(task.submitted_for_review_by);
+  if (task.created_by && task.created_by !== req.user!.id) notifyUsers.add(task.created_by);
+
+  const notifTitleMap: Record<string, string> = {
+    approve: `Task Completion Verified: ${task.ref_number}`,
+    request_photos: `Additional Photos Requested: ${task.ref_number}`,
+    return_for_correction: `Task Returned for Correction: ${task.ref_number}`,
+    reject: `Task Completion Rejected: ${task.ref_number}`,
+  };
+
+  for (const uid of notifyUsers) {
+    createNotification({
+      userId: uid,
+      projectId: task.project_id,
+      type: 'task_verification',
+      title: notifTitleMap[decision],
+      body: cleanRemarks || `Verified by ${req.user!.full_name}.`,
+      linkSection: 'tasks',
+    });
+  }
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: historyAction,
+    module: 'tasks',
+    recordType: 'task',
+    recordRef: task.ref_number,
+    previousValue: { status: task.status, completionStatus: task.completion_status },
+    newValue: { status: nextStatus, completionStatus: nextCompletionStatus },
+    remarks: cleanRemarks,
+    ipAddress: req.ip || '',
+  });
+
+  emitSyncEvent({
+    eventType: 'task:verified',
+    module: 'tasks',
+    projectId: task.project_id,
+    payload: { id: taskId, status: nextStatus, completionStatus: nextCompletionStatus },
+  });
+
+  res.json({ ok: true, status: nextStatus, completionStatus: nextCompletionStatus });
+});
+
+router.post('/tasks/:id/amend-evidence', requireModule('tasks'), (req: AuthenticatedRequest, res) => {
+  if (!hasPermission(req.user!, 'tasks', 'amend_evidence') && !hasPermission(req.user!, 'tasks', 'verify')) {
+    res.status(403).json({ error: 'Authorized amendment permission required' });
+    return;
+  }
+  const taskId = Number(req.params.id);
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as any;
+  if (!task || !canAccessProject(req.user!, task.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+
+  const { amendmentNote, photosBase64, docsBase64 } = req.body || {};
+  if (!String(amendmentNote || '').trim()) {
+    res.status(400).json({ error: 'Amendment reason/note is required' });
+    return;
+  }
+
+  const addedIds = transaction(() => {
+    const ids: number[] = [];
+    if (Array.isArray(photosBase64)) {
+      for (const item of photosBase64.slice(0, 10)) {
+        if (!item?.dataUrl) continue;
+        const saved = saveBase64Attachment({
+          dataUrl: item.dataUrl,
+          fileName: item.fileName || `amend-${task.ref_number}.jpg`,
+          entityType: 'task_completion_photo',
+          entityId: taskId,
+          projectId: task.project_id,
+          category: 'Amended Photo Proof',
+          caption: item.caption || amendmentNote,
+          uploadedBy: req.user!.id,
+          isAmended: true,
+          amendmentNote: String(amendmentNote).trim(),
+        });
+        db.prepare('UPDATE protected_attachments SET is_locked = 1 WHERE id = ?').run(saved.id);
+        ids.push(saved.id);
+      }
+    }
+    if (Array.isArray(docsBase64)) {
+      for (const item of docsBase64.slice(0, 5)) {
+        if (!item?.dataUrl) continue;
+        const saved = saveBase64Attachment({
+          dataUrl: item.dataUrl,
+          fileName: item.fileName || `amend-${task.ref_number}.pdf`,
+          entityType: 'task_completion_doc',
+          entityId: taskId,
+          projectId: task.project_id,
+          category: 'Amended Document',
+          caption: item.caption || amendmentNote,
+          uploadedBy: req.user!.id,
+          isAmended: true,
+          amendmentNote: String(amendmentNote).trim(),
+        });
+        db.prepare('UPDATE protected_attachments SET is_locked = 1 WHERE id = ?').run(saved.id);
+        ids.push(saved.id);
+      }
+    }
+    if (ids.length === 0) {
+      throw new Error('Provide at least one amendment file or photo');
+    }
+
+    db.prepare(
+      `INSERT INTO task_completion_history (
+        task_id, actor_id, action, previous_status, new_status, completion_status, remarks, attachment_ids_json
+      ) VALUES (?, ?, 'AMENDED_EVIDENCE', ?, ?, ?, ?, ?)`
+    ).run(taskId, req.user!.id, task.status, task.status, task.completion_status, String(amendmentNote).trim(), JSON.stringify(ids));
+
+    return ids;
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'AMEND_TASK_EVIDENCE',
+    module: 'tasks',
+    recordType: 'task',
+    recordRef: task.ref_number,
+    newValue: { addedAttachmentIds: addedIds },
+    remarks: String(amendmentNote).trim(),
+    ipAddress: req.ip || '',
+  });
+
+  res.json({ ok: true, addedAttachmentIds: addedIds });
 });
 
 router.get('/tasks/:id/comments', requireModule('tasks'), requirePermission('tasks', 'view'), (req: AuthenticatedRequest, res) => {

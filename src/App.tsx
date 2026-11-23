@@ -22,7 +22,9 @@ import {
 import { ProjectWorkspaceView } from './pages/ProjectWorkspaceView';
 import { ProjectsListView } from './pages/ProjectsListView';
 import { QuotationsModuleView } from './pages/QuotationsModuleView';
+import { CatalogOfWorksView } from './pages/CatalogOfWorksView';
 import { ReportsView } from './pages/ReportsView';
+import { LiquidationReviewView } from './components/LiquidationReviewView';
 
 const RootRouter: React.FC = () => {
   const { user, loading, hasPerm } = useAuth();
@@ -45,6 +47,7 @@ const RootRouter: React.FC = () => {
       else if (hasPerm('procurement', 'view')) setSection('procurement');
       else if (hasPerm('personnel', 'view')) setSection('personnel');
       else if (hasPerm('equipment', 'view')) setSection('equipment');
+      else if (hasPerm('catalog', 'view')) setSection('catalog');
     }
   }, [user, hasPerm]);
 
@@ -97,12 +100,14 @@ const RootRouter: React.FC = () => {
       target === 'dashboard' ||
       target === 'projects' ||
       target === 'tasks' ||
+      target === 'liquidations' ||
       target === 'procurement' ||
       target === 'personnel' ||
       target === 'equipment' ||
       target === 'revisions' ||
       target === 'reports' ||
       target === 'quotations' ||
+      target === 'catalog' ||
       target === 'admin'
     ) {
       setSection(target);
@@ -135,6 +140,8 @@ const RootRouter: React.FC = () => {
         );
       case 'tasks':
         return <TasksGlobalView />;
+      case 'liquidations':
+        return <LiquidationReviewView />;
       case 'procurement':
         return <ProcurementGlobalView />;
       case 'personnel':
@@ -147,6 +154,8 @@ const RootRouter: React.FC = () => {
         return <ReportsView />;
       case 'quotations':
         return <QuotationsModuleView onOpenProject={handleOpenProject} />;
+      case 'catalog':
+        return <CatalogOfWorksView />;
       case 'admin':
         return <AdminConsoleView initialTab={adminTab} />;
       default:

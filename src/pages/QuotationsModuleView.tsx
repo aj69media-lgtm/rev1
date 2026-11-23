@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowRight,
   ArrowUp,
@@ -28,69 +29,22 @@ import {
   X,
 } from 'lucide-react';
 import { QuotationDocumentPrint } from '../components/QuotationDocumentPrint';
+import { CatalogAndPackagePickerModal } from '../components/quotations/CatalogAndPackagePickerModal';
+import { WorkPackageCatalogBrowser } from '../components/quotations/WorkPackageCatalogBrowser';
+import {
+  calcSellRate,
+  round2,
+  type CatalogItemRecord,
+  type EditorItem,
+  type EditorSection,
+  type PricingMode,
+  type WorkAssemblyRecord,
+} from '../components/quotations/quotationCatalogTypes';
 import { apiRequest, formatDate, formatMoney } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 
 type WorkspaceTab = 'dashboard' | 'editor' | 'catalog' | 'settings';
-type PricingMode = 'computed' | 'included' | 'excluded' | 'override';
-
-interface EditorSection {
-  tempKey: string;
-  id?: number;
-  code: string;
-  title: string;
-  sortOrder: number;
-  isCollapsed: boolean;
-}
-
-interface EditorItem {
-  tempKey: string;
-  id?: number;
-  sectionKey: string;
-  parentKey?: string | null;
-  rowType: 'subsection' | 'item' | 'subitem' | 'note';
-  lineNo: string;
-  itemCode: string;
-  description: string;
-  specification: string;
-  qty: number;
-  unit: string;
-  matPricingMode: PricingMode;
-  lbrPricingMode: PricingMode;
-  visibilityMode: 'visible' | 'hidden';
-  rollupChildren: boolean;
-  matUnitCost: number;
-  lbrUnitCost: number;
-  matGpPct: number;
-  lbrGpPct: number;
-  overrideMatRate: number | null;
-  overrideLbrRate: number | null;
-  overrideReason: string;
-  catalogItemId?: number | null;
-  supplierRef?: string;
-  sortOrder: number;
-  // Server-provided or client-previewed rates:
-  matSellRate: number;
-  lbrSellRate: number;
-  combinedUnitRate: number;
-  extendedSelling: number;
-  extendedCost: number;
-  grossProfit: number;
-}
-
-function round2(n: number): number {
-  return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
-}
-
-function calcSellRate(cost: number, gp: number, mode: PricingMode, overrideRate?: number | null): number {
-  if (mode === 'included' || mode === 'excluded') return 0;
-  if (mode === 'override') return Math.max(0, round2(Number(overrideRate ?? 0)));
-  const c = Number(cost || 0);
-  if (c <= 0) return 0;
-  const g = Math.min(0.95, Math.max(0, Number(gp || 0)));
-  return Math.ceil(Number((c / (1 - g)).toFixed(10)));
-}
 
 function calcManpowerTeams(m: number): number {
   const n = Math.max(0, Math.floor(Number(m || 0)));
@@ -137,9 +91,8 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
     clients: any[];
     settings: any;
   }>({ units: [], categories: [], locations: [], clients: [], settings: {} });
-  const [catalogItems, setCatalogItems] = useState<any[]>([]);
-  const [catalogCategoryFilter, setCatalogCategoryFilter] = useState('all');
-  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogItems, setCatalogItems] = useState<CatalogItemRecord[]>([]);
+  const [catalogAssemblies, setCatalogAssemblies] = useState<WorkAssemblyRecord[]>([]);
   const [priceHistory, setPriceHistory] = useState<any[]>([]);
   const [reconciliation, setReconciliation] = useState<any>(null);
 
@@ -186,8 +139,13 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
   const [inspectedRowKey, setInspectedRowKey] = useState<string | null>(null);
   const [showHeaderPanel, setShowHeaderPanel] = useState(true);
   const [showTermsPanel, setShowTermsPanel] = useState(false);
-  const [showCatalogPickerForSection, setShowCatalogPickerForSection] = useState<string | null>(null);
-  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerModalState, setPickerModalState] = useState<{
+    sectionKey: string;
+    mode: 'items' | 'packages';
+    assemblyId?: number | null;
+  } | null>(null);
+  const [quickQuery, setQuickQuery] = useState('');
+  const [quickTargetSection, setQuickTargetSection] = useState('');
   const [printMode, setPrintMode] = useState<'client' | 'internal' | null>(null);
   const [showNewWizard, setShowNewWizard] = useState(false);
   const [showRevModal, setShowRevModal] = useState(false);
@@ -262,13 +220,15 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
 
   const loadMetaAndCatalog = useCallback(async () => {
     try {
-      const [metaRes, catRes] = await Promise.all([
+      const [metaRes, catRes, asmRes] = await Promise.all([
         apiRequest('/api/quotations/catalog/meta'),
         apiRequest('/api/quotations/catalog/items'),
+        apiRequest('/api/quotations/catalog/assemblies'),
       ]);
       setMeta(metaRes);
       setSettingsForm(metaRes.settings);
       setCatalogItems(catRes.items || []);
+      setCatalogAssemblies(asmRes.assemblies || []);
       if (!wizClientId && metaRes.clients?.length > 0) {
         setWizClientId(String(metaRes.clients[0].id));
       }
@@ -354,6 +314,17 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
         overrideReason: it.override_reason || '',
         catalogItemId: it.catalog_item_id ?? null,
         supplierRef: it.supplier_ref || '',
+        sourceAssemblyId: it.source_assembly_id ?? null,
+        sourceAssemblyCode: it.source_assembly_code || '',
+        sourceAssemblyVersion: it.source_assembly_version ?? null,
+        supplierId: it.supplier_id ?? null,
+        supplierPriceId: it.supplier_price_id ?? null,
+        componentType: it.component_type || '',
+        calcBasis: it.calc_basis || '',
+        consumptionRate: it.consumption_rate ?? null,
+        wastagePct: it.wastage_pct ?? null,
+        measurementQty: it.measurement_qty ?? null,
+        formulaText: it.formula_text || '',
         sortOrder: it.sort_order ?? idx + 1,
         matSellRate: Number(it.mat_sell_rate ?? 0),
         lbrSellRate: Number(it.lbr_sell_rate ?? 0),
@@ -363,6 +334,7 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
         grossProfit: Number(it.gross_profit ?? 0),
       }));
       setItems(mappedItems);
+      setQuickTargetSection(mappedSections[0]?.tempKey || '');
       setDirty(false);
       setInspectedRowKey(null);
       setTab('editor');
@@ -373,7 +345,7 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
     }
   }, []);
 
-  // Live recalculated view matching REV1 backend formulas
+  // Live recalculated view matching REV1 backend formulas (including parent assembly rollup)
   const liveCalc = useMemo(() => {
     const computedItems = items.map((it) => {
       const isPriced = it.rowType === 'item' || it.rowType === 'subitem';
@@ -387,7 +359,9 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
       const extSell = isPriced ? round2(it.qty * combined) : 0;
       const matC = it.matPricingMode === 'included' || it.matPricingMode === 'excluded' ? 0 : Number(it.matUnitCost || 0);
       const lbrC = it.lbrPricingMode === 'included' || it.lbrPricingMode === 'excluded' ? 0 : Number(it.lbrUnitCost || 0);
-      const extCost = isPriced ? round2(it.qty * (matC + lbrC)) : 0;
+      const extMatCost = isPriced ? round2(it.qty * matC) : 0;
+      const extLbrCost = isPriced ? round2(it.qty * lbrC) : 0;
+      const extCost = round2(extMatCost + extLbrCost);
       const gp = round2(extSell - extCost);
       return {
         ...it,
@@ -397,8 +371,31 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
         extendedSelling: extSell,
         extendedCost: extCost,
         grossProfit: gp,
+        _extMatCost: extMatCost,
+        _extLbrCost: extLbrCost,
       };
     });
+
+    // Optional parent assembly rollup matching quotationEngine.ts
+    for (const row of computedItems) {
+      if (row.rowType === 'item' && row.rollupChildren && canViewCosting) {
+        const children = computedItems.filter((c) => c !== row && c.parentKey === row.tempKey);
+        if (children.length > 0) {
+          const sumMatCost = round2(children.reduce((s, c) => s + c._extMatCost, 0));
+          const sumLbrCost = round2(children.reduce((s, c) => s + c._extLbrCost, 0));
+          row.matUnitCost = row.qty > 0 ? round2(sumMatCost / row.qty) : sumMatCost;
+          row.lbrUnitCost = row.qty > 0 ? round2(sumLbrCost / row.qty) : sumLbrCost;
+          row.matSellRate = calcSellRate(row.matUnitCost, row.matGpPct, row.matPricingMode, row.overrideMatRate);
+          row.lbrSellRate = calcSellRate(row.lbrUnitCost, row.lbrGpPct, row.lbrPricingMode, row.overrideLbrRate);
+          row.combinedUnitRate = row.matSellRate + row.lbrSellRate;
+          row.extendedSelling = round2(row.qty * row.combinedUnitRate);
+          const mC = row.matPricingMode === 'included' || row.matPricingMode === 'excluded' ? 0 : row.matUnitCost;
+          const lC = row.lbrPricingMode === 'included' || row.lbrPricingMode === 'excluded' ? 0 : row.lbrUnitCost;
+          row.extendedCost = round2(row.qty * (mC + lC));
+          row.grossProfit = round2(row.extendedSelling - row.extendedCost);
+        }
+      }
+    }
 
     const sectionTotals: Record<string, { selling: number; cost: number; gp: number }> = {};
     for (const sec of sections) {
@@ -542,45 +539,72 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
     setDirty(true);
   };
 
-  const addCatalogItemToSection = (sectionKey: string, catItem: any) => {
+  const insertRowsIntoSection = (sectionKey: string, newRows: EditorItem[]) => {
+    setItems((prev) => {
+      const targetSec = sectionKey || sections[0]?.tempKey;
+      const secItems = prev.filter((i) => i.sectionKey === targetSec);
+      const baseSort = (secItems[secItems.length - 1]?.sortOrder || 0) + 1;
+      const baseLine = secItems.filter((x) => x.rowType === 'item').length + 1;
+      let lineCounter = baseLine;
+      const normalized = newRows.map((r, idx) => ({
+        ...r,
+        sectionKey: targetSec,
+        sortOrder: baseSort + idx,
+        lineNo: r.rowType === 'item' ? String(lineCounter++) : r.lineNo,
+      }));
+      return [...prev, ...normalized];
+    });
+    setDirty(true);
+    setPickerModalState(null);
+  };
+
+  const addCatalogItemToSection = (sectionKey: string, catItem: CatalogItemRecord) => {
     const newKey = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const secItems = items.filter((i) => i.sectionKey === sectionKey);
-    const nextOrder = (secItems[secItems.length - 1]?.sortOrder || 0) + 1;
+    const supPrices = catItem.supplier_prices || [];
+    const chosenSup = supPrices.find((sp) => sp.is_preferred) || supPrices[0] || null;
+    const matCost = chosenSup ? Number(chosenSup.unit_price) : Number(catItem.mat_unit_cost ?? 0);
+    const lbrCost = Number(catItem.lbr_unit_cost ?? 0);
+    const matGp = Number(catItem.default_mat_gp_pct ?? meta.settings?.default_mat_gp_pct ?? 0.3);
+    const lbrGp = Number(catItem.default_lbr_gp_pct ?? meta.settings?.default_lbr_gp_pct ?? 0.3);
+    const matSell = canViewCosting ? calcSellRate(matCost, matGp, 'computed') : Number(catItem.mat_sell_rate ?? 0);
+    const lbrSell = canViewCosting ? calcSellRate(lbrCost, lbrGp, 'computed') : Number(catItem.lbr_sell_rate ?? 0);
+
     const newRow: EditorItem = {
       tempKey: newKey,
       sectionKey,
       parentKey: null,
       rowType: 'item',
-      lineNo: String(secItems.filter((x) => x.rowType === 'item').length + 1),
+      lineNo: '',
       itemCode: catItem.item_code || '',
       description: catItem.name || catItem.description,
       specification: catItem.specification || '',
       qty: 1,
       unit: catItem.default_unit || 'lot',
-      matPricingMode: Number(catItem.mat_unit_cost || 0) === 0 && catItem.is_general_requirement ? 'included' : 'computed',
+      matPricingMode: matCost === 0 && catItem.is_general_requirement ? 'included' : 'computed',
       lbrPricingMode: 'computed',
       visibilityMode: 'visible',
       rollupChildren: false,
-      matUnitCost: Number(catItem.mat_unit_cost ?? 0),
-      lbrUnitCost: Number(catItem.lbr_unit_cost ?? 0),
-      matGpPct: Number(catItem.default_mat_gp_pct ?? 0.3),
-      lbrGpPct: Number(catItem.default_lbr_gp_pct ?? 0.3),
+      matUnitCost: matCost,
+      lbrUnitCost: lbrCost,
+      matGpPct: matGp,
+      lbrGpPct: lbrGp,
       overrideMatRate: null,
       overrideLbrRate: null,
       overrideReason: '',
       catalogItemId: catItem.id,
-      supplierRef: catItem.supplier_ref || '',
-      sortOrder: nextOrder,
-      matSellRate: Number(catItem.mat_sell_rate ?? 0),
-      lbrSellRate: Number(catItem.lbr_sell_rate ?? 0),
-      combinedUnitRate: Number(catItem.combined_sell_rate ?? 0),
-      extendedSelling: Number(catItem.combined_sell_rate ?? 0),
-      extendedCost: Number(catItem.mat_unit_cost ?? 0) + Number(catItem.lbr_unit_cost ?? 0),
-      grossProfit: 0,
+      supplierRef: chosenSup?.supplier_name ?? catItem.supplier_ref ?? '',
+      supplierId: chosenSup?.supplier_id ?? null,
+      supplierPriceId: chosenSup?.id ?? null,
+      componentType: catItem.item_type || 'Material',
+      sortOrder: 1,
+      matSellRate: matSell,
+      lbrSellRate: lbrSell,
+      combinedUnitRate: matSell + lbrSell,
+      extendedSelling: matSell + lbrSell,
+      extendedCost: matCost + lbrCost,
+      grossProfit: matSell + lbrSell - (matCost + lbrCost),
     };
-    setItems((prev) => [...prev, newRow]);
-    setDirty(true);
-    setShowCatalogPickerForSection(null);
+    insertRowsIntoSection(sectionKey, [newRow]);
   };
 
   const duplicateRow = (row: EditorItem) => {
@@ -1454,7 +1478,7 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
               </div>
 
               {/* Interactive Spreadsheet Grid */}
-              <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+              <div className="rounded-xl border border-slate-200 bg-white overflow-visible">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
                   <div className="text-xs font-semibold text-slate-800">
                     Bill of Quantities &amp; Pricing Sheet
@@ -1463,14 +1487,141 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
                     </span>
                   </div>
                   {canEdit && (
-                    <button
-                      type="button"
-                      onClick={addSection}
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-50"
-                    >
-                      <Plus className="h-3 w-3" />
-                      Add Section
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Quick Material / Work Package Entry Autocomplete */}
+                      <div className="relative">
+                        <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                        <input
+                          value={quickQuery}
+                          onChange={(e) => setQuickQuery(e.target.value)}
+                          placeholder="Quick add (e.g. CHB 4, Masonry)..."
+                          className="w-60 rounded-md border border-slate-300 bg-white pl-8 pr-6 py-1 text-xs"
+                        />
+                        {quickQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setQuickQuery('')}
+                            className="absolute right-1.5 top-1.5 text-slate-400 hover:text-slate-700"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {quickQuery.trim().length >= 2 && (
+                          <div className="absolute right-0 z-40 mt-1 w-96 rounded-xl border border-slate-200 bg-white shadow-lg max-h-80 overflow-y-auto divide-y divide-slate-100">
+                            <div className="flex items-center justify-between bg-slate-50 px-3 py-1.5 text-[11px] text-slate-600">
+                              <span>Target Section:</span>
+                              <select
+                                value={quickTargetSection || sections[0]?.tempKey || ''}
+                                onChange={(e) => setQuickTargetSection(e.target.value)}
+                                className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px]"
+                              >
+                                {sections.map((s) => (
+                                  <option key={s.tempKey} value={s.tempKey}>
+                                    {s.code} · {s.title}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {catalogAssemblies
+                              .filter((a) =>
+                                `${a.assembly_code} ${a.name} ${a.category_name}`
+                                  .toLowerCase()
+                                  .includes(quickQuery.toLowerCase())
+                              )
+                              .slice(0, 4)
+                              .map((a) => (
+                                <button
+                                  key={`qa-asm-${a.id}`}
+                                  type="button"
+                                  onClick={() => {
+                                    setPickerModalState({
+                                      sectionKey: quickTargetSection || sections[0]?.tempKey || '',
+                                      mode: 'packages',
+                                      assemblyId: a.id,
+                                    });
+                                    setQuickQuery('');
+                                  }}
+                                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-amber-50"
+                                >
+                                  <div>
+                                    <div className="font-semibold text-slate-900">
+                                      <span className="font-mono text-amber-800 mr-1.5">{a.assembly_code}</span>
+                                      {a.name}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500">
+                                      Work Package · {a.component_count} items · {a.unit}
+                                    </div>
+                                  </div>
+                                  <span className="text-[11px] font-semibold text-amber-800 whitespace-nowrap">
+                                    Configure →
+                                  </span>
+                                </button>
+                              ))}
+                            {catalogItems
+                              .filter((ci) =>
+                                `${ci.item_code} ${ci.name} ${ci.specification} ${ci.category}`
+                                  .toLowerCase()
+                                  .includes(quickQuery.toLowerCase())
+                              )
+                              .slice(0, 6)
+                              .map((ci) => (
+                                <button
+                                  key={`qa-it-${ci.id}`}
+                                  type="button"
+                                  onClick={() => {
+                                    addCatalogItemToSection(
+                                      quickTargetSection || sections[0]?.tempKey || '',
+                                      ci
+                                    );
+                                    setQuickQuery('');
+                                  }}
+                                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-slate-50"
+                                >
+                                  <div>
+                                    <div className="font-semibold text-slate-900">
+                                      <span className="font-mono text-slate-600 mr-1.5">{ci.item_code}</span>
+                                      {ci.name}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500">
+                                      {ci.category} · {ci.default_unit}
+                                      {canViewCosting && ci.preferred_supplier_name
+                                        ? ` · ${ci.preferred_supplier_name}`
+                                        : ''}
+                                    </div>
+                                  </div>
+                                  <span className="font-mono text-[11px] font-semibold text-slate-800 whitespace-nowrap">
+                                    + Insert
+                                  </span>
+                                </button>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          sections[0] &&
+                          setPickerModalState({
+                            sectionKey: quickTargetSection || sections[0].tempKey,
+                            mode: 'packages',
+                          })
+                        }
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-400 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-900 hover:bg-amber-100 whitespace-nowrap shrink-0"
+                      >
+                        <Layers className="h-3.5 w-3.5" />
+                        Add Work Package
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={addSection}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-50 whitespace-nowrap shrink-0"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add Section
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1525,25 +1676,36 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
                                     className="bg-transparent font-bold uppercase tracking-wide text-slate-900 focus:bg-white focus:outline-none px-1 rounded"
                                   />
                                   {canEdit && (
-                                    <div className="flex items-center gap-1 ml-2 font-normal">
+                                    <div className="flex flex-wrap items-center gap-1 ml-2 font-normal">
                                       <button
                                         type="button"
                                         onClick={() => addBlankRow(sec.tempKey, 'item')}
-                                        className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] hover:bg-slate-50"
+                                        className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] hover:bg-slate-50 whitespace-nowrap"
                                       >
                                         + Item
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => setShowCatalogPickerForSection(sec.tempKey)}
-                                        className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800 hover:bg-amber-100"
+                                        onClick={() =>
+                                          setPickerModalState({ sectionKey: sec.tempKey, mode: 'items' })
+                                        }
+                                        className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-800 hover:bg-slate-50 whitespace-nowrap"
                                       >
                                         + From Catalog
                                       </button>
                                       <button
                                         type="button"
+                                        onClick={() =>
+                                          setPickerModalState({ sectionKey: sec.tempKey, mode: 'packages' })
+                                        }
+                                        className="rounded border border-amber-400 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 whitespace-nowrap"
+                                      >
+                                        + Work Package
+                                      </button>
+                                      <button
+                                        type="button"
                                         onClick={() => addBlankRow(sec.tempKey, 'subsection')}
-                                        className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] hover:bg-slate-50"
+                                        className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] hover:bg-slate-50 whitespace-nowrap"
                                       >
                                         + Subheader
                                       </button>
@@ -1638,10 +1800,26 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
                                           isHidden ? 'italic text-slate-600' : 'font-medium text-slate-900'
                                         }`}
                                       />
-                                      {isHidden && (
-                                        <span className="px-1 text-[10px] text-amber-700">
-                                          Hidden internal breakdown (excluded from section total)
-                                        </span>
+                                      {(row.sourceAssemblyCode || row.formulaText || (canViewCosting && row.supplierRef) || isHidden) && (
+                                        <div className="px-1 text-[10px] text-slate-500 flex flex-wrap items-center gap-1.5">
+                                          {row.sourceAssemblyCode && (
+                                            <span className="font-mono text-amber-800">
+                                              {row.sourceAssemblyCode}
+                                              {row.sourceAssemblyVersion ? ` v${row.sourceAssemblyVersion}` : ''}
+                                            </span>
+                                          )}
+                                          {row.formulaText && (
+                                            <span className="font-mono text-sky-800">· {row.formulaText}</span>
+                                          )}
+                                          {canViewCosting && row.supplierRef && (
+                                            <span className="text-slate-600">· Supplier: {row.supplierRef}</span>
+                                          )}
+                                          {isHidden && (
+                                            <span className="text-amber-700">
+                                              · Hidden internal breakdown
+                                            </span>
+                                          )}
+                                        </div>
                                       )}
                                     </div>
                                   </td>
@@ -1882,54 +2060,114 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
                 </div>
               </div>
 
-              {/* Calculation Transparency Inspector (When Row Selected) */}
-              {inspectedItem && canViewCosting && (
-                <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 text-xs">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="font-semibold text-slate-900">
-                      Calculation Inspector: {inspectedItem.description} ({inspectedItem.qty} {inspectedItem.unit})
+              {/* Calculation Transparency & Supplier Snapshot Inspector */}
+              {inspectedItem && canViewCosting && (() => {
+                const linkedCat = inspectedItem.catalogItemId
+                  ? catalogItems.find((ci) => ci.id === inspectedItem.catalogItemId)
+                  : null;
+                const supPrices = linkedCat?.supplier_prices || [];
+                const missingSupPrice =
+                  inspectedItem.componentType === 'Material' &&
+                  supPrices.length === 0 &&
+                  inspectedItem.matUnitCost <= 0;
+
+                return (
+                  <div className="rounded-xl border border-sky-200 bg-sky-50/50 p-4 text-xs space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold text-slate-900">
+                        Calculation &amp; Supplier Inspector: {inspectedItem.description} ({inspectedItem.qty} {inspectedItem.unit})
+                        {inspectedItem.sourceAssemblyCode && (
+                          <span className="ml-2 font-mono text-[11px] text-amber-800">
+                            · From {inspectedItem.sourceAssemblyCode}
+                            {inspectedItem.sourceAssemblyVersion ? ` v${inspectedItem.sourceAssemblyVersion}` : ''}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setInspectedRowKey(null)}
+                        className="text-slate-500 hover:text-slate-900"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setInspectedRowKey(null)}
-                      className="text-slate-500 hover:text-slate-900"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="border-t border-sky-200 pt-2">
+                        <div className="text-[11px] font-medium text-slate-500">Material Selling Formula</div>
+                        <div className="mt-1 font-mono text-slate-800">
+                          {inspectedItem.matPricingMode === 'included'
+                            ? 'Mode = included -> ₱0.00'
+                            : `ROUNDUP(${inspectedItem.matUnitCost} / (1 - ${inspectedItem.matGpPct}), 0) = ${formatMoney(
+                                inspectedItem.matSellRate,
+                                'PHP'
+                              )}`}
+                        </div>
+                      </div>
+                      <div className="border-t border-sky-200 pt-2">
+                        <div className="text-[11px] font-medium text-slate-500">Labor Selling Formula</div>
+                        <div className="mt-1 font-mono text-slate-800">
+                          {`ROUNDUP(${inspectedItem.lbrUnitCost} / (1 - ${inspectedItem.lbrGpPct}), 0) = ${formatMoney(
+                            inspectedItem.lbrSellRate,
+                            'PHP'
+                          )}`}
+                        </div>
+                      </div>
+                      <div className="border-t border-sky-200 pt-2">
+                        <div className="text-[11px] font-medium text-slate-500">Extended &amp; Gross Profit</div>
+                        <div className="mt-1 font-mono text-slate-800">
+                          Rate {formatMoney(inspectedItem.combinedUnitRate, 'PHP')} × {inspectedItem.qty} ={' '}
+                          <strong>{formatMoney(inspectedItem.extendedSelling, 'PHP')}</strong> · Cost{' '}
+                          {formatMoney(inspectedItem.extendedCost, 'PHP')} · GP{' '}
+                          <strong className="text-emerald-700">{formatMoney(inspectedItem.grossProfit, 'PHP')}</strong>
+                        </div>
+                        {inspectedItem.formulaText && (
+                          <div className="mt-1 font-mono text-[10px] text-sky-900">
+                            Qty Basis: {inspectedItem.formulaText}
+                          </div>
+                        )}
+                      </div>
+                      <div className="border-t border-sky-200 pt-2">
+                        <div className="text-[11px] font-medium text-slate-500">Supplier Cost Snapshot</div>
+                        {supPrices.length > 0 && canEdit ? (
+                          <select
+                            value={inspectedItem.supplierPriceId ?? ''}
+                            onChange={(e) => {
+                              const spId = Number(e.target.value);
+                              const chosen = supPrices.find((sp) => sp.id === spId);
+                              if (chosen) {
+                                updateItem(inspectedItem.tempKey, {
+                                  supplierPriceId: chosen.id,
+                                  supplierId: chosen.supplier_id,
+                                  supplierRef: chosen.supplier_name,
+                                  matUnitCost: Number(chosen.unit_price),
+                                });
+                              }
+                            }}
+                            className="mt-1 w-full rounded border border-sky-300 bg-white px-2 py-1 text-[11px]"
+                          >
+                            <option value="">Keep snapshot ({inspectedItem.supplierRef || 'Custom'})</option>
+                            {supPrices.map((sp) => (
+                              <option key={sp.id} value={sp.id}>
+                                {sp.supplier_name} — {formatMoney(sp.unit_price, 'PHP')}/{sp.unit}
+                                {sp.is_preferred ? ' ★' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        ) : missingSupPrice ? (
+                          <div className="mt-1 inline-flex items-center gap-1 text-[11px] text-amber-800">
+                            <AlertTriangle className="h-3.5 w-3.5" />
+                            No supplier price registered — enter manual cost
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-slate-700">
+                            {inspectedItem.supplierRef || 'Manual / Historical Snapshot'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="border-t border-sky-200 pt-2">
-                      <div className="text-[11px] font-medium text-slate-500">Material Selling Formula</div>
-                      <div className="mt-1 font-mono text-slate-800">
-                        {inspectedItem.matPricingMode === 'included'
-                          ? 'Mode = included -> ₱0.00'
-                          : `ROUNDUP(${inspectedItem.matUnitCost} / (1 - ${inspectedItem.matGpPct}), 0) = ${formatMoney(
-                              inspectedItem.matSellRate,
-                              'PHP'
-                            )}`}
-                      </div>
-                    </div>
-                    <div className="border-t border-sky-200 pt-2">
-                      <div className="text-[11px] font-medium text-slate-500">Labor Selling Formula</div>
-                      <div className="mt-1 font-mono text-slate-800">
-                        {`ROUNDUP(${inspectedItem.lbrUnitCost} / (1 - ${inspectedItem.lbrGpPct}), 0) = ${formatMoney(
-                          inspectedItem.lbrSellRate,
-                          'PHP'
-                        )}`}
-                      </div>
-                    </div>
-                    <div className="border-t border-sky-200 pt-2">
-                      <div className="text-[11px] font-medium text-slate-500">Extended &amp; Gross Profit</div>
-                      <div className="mt-1 font-mono text-slate-800">
-                        Rate {formatMoney(inspectedItem.combinedUnitRate, 'PHP')} × {inspectedItem.qty} ={' '}
-                        <strong>{formatMoney(inspectedItem.extendedSelling, 'PHP')}</strong> · Cost{' '}
-                        {formatMoney(inspectedItem.extendedCost, 'PHP')} · GP{' '}
-                        <strong className="text-emerald-700">{formatMoney(inspectedItem.grossProfit, 'PHP')}</strong>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Bottom Grid: Terms/Approvals + Financial Summary */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
@@ -2146,106 +2384,37 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
         </div>
       )}
 
-      {/* TAB 3: ITEM & COST CATALOG + GENERAL REQUIREMENTS + PRICE HISTORY */}
+      {/* TAB 3: WORK PACKAGES + INDIVIDUAL ITEM & COST CATALOG + PRICE HISTORY */}
       {tab === 'catalog' && (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
-                <input
-                  value={catalogSearch}
-                  onChange={(e) => setCatalogSearch(e.target.value)}
-                  placeholder="Search code or item..."
-                  className="rounded-lg border border-slate-200 pl-8 pr-3 py-1.5 text-xs"
-                />
-              </div>
-              <select
-                value={catalogCategoryFilter}
-                onChange={(e) => setCatalogCategoryFilter(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs"
-              >
-                <option value="all">All Categories</option>
-                {meta.categories.map((c: any) => (
-                  <option key={c.id} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {hasPerm('quotations', 'edit') && (
-              <button
-                type="button"
-                onClick={() => setShowNewCatalogModal(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-800"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add Catalog Item
-              </button>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                <tr>
-                  <th className="px-4 py-2.5">Code</th>
-                  <th className="px-4 py-2.5">Item Name &amp; Specification</th>
-                  <th className="px-4 py-2.5">Category</th>
-                  <th className="px-4 py-2.5">Unit</th>
-                  {canViewCosting && (
-                    <>
-                      <th className="px-4 py-2.5 text-right">Mat Cost</th>
-                      <th className="px-4 py-2.5 text-right">Lbr Cost</th>
-                      <th className="px-4 py-2.5">Supplier</th>
-                    </>
-                  )}
-                  <th className="px-4 py-2.5 text-right">Ref. Selling Rate</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {catalogItems
-                  .filter((it) => {
-                    if (catalogCategoryFilter !== 'all' && it.category !== catalogCategoryFilter) return false;
-                    if (
-                      catalogSearch &&
-                      !`${it.item_code} ${it.name} ${it.description}`.toLowerCase().includes(catalogSearch.toLowerCase())
-                    ) {
-                      return false;
-                    }
-                    return true;
-                  })
-                  .map((it) => (
-                    <tr key={it.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-2.5 font-mono font-semibold text-slate-900">{it.item_code}</td>
-                      <td className="px-4 py-2.5">
-                        <div className="font-medium text-slate-900">{it.name}</div>
-                        <div className="text-[11px] text-slate-500">
-                          {it.specification || it.description}
-                          {it.is_general_requirement ? ' · General Requirement' : ''}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-slate-600">{it.category}</td>
-                      <td className="px-4 py-2.5 font-mono">{it.default_unit}</td>
-                      {canViewCosting && (
-                        <>
-                          <td className="px-4 py-2.5 text-right font-mono tabular-nums">
-                            {formatMoney(it.mat_unit_cost, 'PHP')}
-                          </td>
-                          <td className="px-4 py-2.5 text-right font-mono tabular-nums">
-                            {formatMoney(it.lbr_unit_cost, 'PHP')}
-                          </td>
-                          <td className="px-4 py-2.5 text-slate-600">{it.supplier_ref || '—'}</td>
-                        </>
-                      )}
-                      <td className="px-4 py-2.5 text-right font-mono font-semibold tabular-nums text-slate-900">
-                        {formatMoney(it.combined_sell_rate, 'PHP')}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+          <WorkPackageCatalogBrowser
+            catalogItems={catalogItems}
+            assemblies={catalogAssemblies}
+            categories={meta.categories}
+            canViewCosting={canViewCosting}
+            canCreateCatalogItem={hasPerm('quotations', 'edit')}
+            hasActiveEditableQuotation={Boolean(activeQuoteId && canEdit)}
+            activeQuoteNumber={quoteBundle?.quotation?.quote_number}
+            onOpenNewCatalogModal={() => setShowNewCatalogModal(true)}
+            onInsertSingleItemToQuote={(catItem) => {
+              const targetSec = quickTargetSection || sections[0]?.tempKey || '';
+              if (targetSec) {
+                addCatalogItemToSection(targetSec, catItem);
+                setTab('editor');
+              }
+            }}
+            onOpenWorkPackageInQuote={(assemblyId) => {
+              const targetSec = quickTargetSection || sections[0]?.tempKey || '';
+              if (targetSec) {
+                setPickerModalState({
+                  sectionKey: targetSec,
+                  mode: 'packages',
+                  assemblyId,
+                });
+                setTab('editor');
+              }
+            }}
+          />
 
           {canViewCosting && priceHistory.length > 0 && (
             <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -2642,56 +2811,28 @@ export const QuotationsModuleView: React.FC<{ onOpenProject?: (projectId: number
         </div>
       )}
 
-      {/* CATALOG PICKER MODAL */}
-      {showCatalogPickerForSection && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
-          <div className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-5 shadow-xl space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="font-display text-sm font-bold text-slate-900">
-                Insert Item from Construction &amp; General Requirements Catalog
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowCatalogPickerForSection(null)}
-                className="text-slate-400 hover:text-slate-700"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <input
-              value={pickerSearch}
-              onChange={(e) => setPickerSearch(e.target.value)}
-              placeholder="Filter catalog by code, name, or category..."
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
-            />
-            <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
-              {catalogItems
-                .filter((c) =>
-                  `${c.item_code} ${c.name} ${c.category}`.toLowerCase().includes(pickerSearch.toLowerCase())
-                )
-                .map((c) => (
-                  <div key={c.id} className="flex items-center justify-between py-2.5 px-2 hover:bg-slate-50 text-xs">
-                    <div>
-                      <div className="font-semibold text-slate-900">
-                        <span className="font-mono text-amber-700 mr-2">{c.item_code}</span>
-                        {c.name}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        {c.category} · Unit: {c.default_unit} · Rate: {formatMoney(c.combined_sell_rate, 'PHP')}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => addCatalogItemToSection(showCatalogPickerForSection, c)}
-                      className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
-                    >
-                      Insert
-                    </button>
-                  </div>
-                ))}
-            </div>
-          </div>
-        </div>
+      {/* UNIFIED WORK PACKAGES & SINGLE ITEMS CATALOG PICKER MODAL */}
+      {pickerModalState && (
+        <CatalogAndPackagePickerModal
+          initialMode={pickerModalState.mode}
+          initialAssemblyId={pickerModalState.assemblyId ?? null}
+          targetSectionKey={pickerModalState.sectionKey}
+          sections={sections}
+          categories={meta.categories}
+          units={meta.units}
+          catalogItems={catalogItems}
+          assemblies={catalogAssemblies}
+          canViewCosting={canViewCosting}
+          canCreateMasterAssembly={hasPerm('catalog', 'create_assembly')}
+          defaultMatGpPct={Number(meta.settings?.default_mat_gp_pct ?? 0.3)}
+          defaultLbrGpPct={Number(meta.settings?.default_lbr_gp_pct ?? 0.3)}
+          existingItemsInSectionCount={
+            items.filter((i) => i.sectionKey === pickerModalState.sectionKey && i.rowType === 'item').length
+          }
+          onClose={() => setPickerModalState(null)}
+          onInsertItems={(secKey, newRows) => insertRowsIntoSection(secKey, newRows)}
+          onRefreshCatalog={loadMetaAndCatalog}
+        />
       )}
 
       {/* NEW REVISION MODAL */}

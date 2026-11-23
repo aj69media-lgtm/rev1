@@ -6,7 +6,9 @@ import { createServer as createViteServer } from 'vite';
 import { runMigrations, seedDefaultRolePermissions } from './server/db.ts';
 import { initWebSocketServer } from './server/realtime.ts';
 import adminRoutes from './server/routes/adminRoutes.ts';
+import attachmentRoutes from './server/routes/attachmentRoutes.ts';
 import authRoutes from './server/routes/authRoutes.ts';
+import catalogRoutes from './server/routes/catalogRoutes.ts';
 import clientPortalRoutes from './server/routes/clientPortalRoutes.ts';
 import financeResourceRoutes from './server/routes/financeResourceRoutes.ts';
 import projectRoutes from './server/routes/projectRoutes.ts';
@@ -18,7 +20,7 @@ async function startServer() {
 
   const app = express();
   app.set('trust proxy', 1);
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '20mb' }));
   app.use(express.urlencoded({ extended: true }));
 
   // Health probe
@@ -30,7 +32,9 @@ async function startServer() {
   app.use('/api/auth', authRoutes);
   app.use('/api/admin', adminRoutes);
   app.use('/api/client-portal', clientPortalRoutes);
+  app.use('/api', attachmentRoutes);
   app.use('/api', projectRoutes);
+  app.use('/api', catalogRoutes);
   app.use('/api', quotationRoutes);
   app.use('/api', financeResourceRoutes);
 

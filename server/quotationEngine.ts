@@ -67,6 +67,17 @@ export interface QuotationItemInput {
   overriddenAt?: string | null;
   catalogItemId?: number | null;
   supplierRef?: string;
+  sourceAssemblyId?: number | null;
+  sourceAssemblyCode?: string;
+  sourceAssemblyVersion?: number | null;
+  supplierId?: number | null;
+  supplierPriceId?: number | null;
+  componentType?: string;
+  calcBasis?: string;
+  consumptionRate?: number | null;
+  wastagePct?: number | null;
+  measurementQty?: number | null;
+  formulaText?: string;
   sortOrder: number;
 }
 
@@ -388,6 +399,9 @@ export function sanitizeRevisionForUser(revision: any, user: AuthUser): any {
       lbr_sell_rate: it.lbr_sell_rate,
       combined_unit_rate: it.combined_unit_rate,
       extended_selling: it.extended_selling,
+      source_assembly_code: it.source_assembly_code || '',
+      component_type: it.component_type || '',
+      formula_text: it.formula_text || '',
       sort_order: it.sort_order,
     }));
 

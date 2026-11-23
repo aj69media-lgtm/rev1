@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   ArrowRight,
   Banknote,
+  Camera,
+  Eye,
+  FileWarning,
   Pencil,
   PiggyBank,
   Plus,
@@ -14,6 +18,8 @@ import {
   Wallet,
 } from 'lucide-react';
 import { DonutChart, StatusLabel } from './Charts';
+import { ExpenseReviewModal, LiquidationReviewView } from './LiquidationReviewView';
+import { EvidenceFilePicker, PendingAttachmentDraft } from './ProtectedAttachmentGallery';
 import { apiRequest, formatCurrencyExact } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
@@ -136,18 +142,27 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
   });
 
   // Expense Form + Cash Request Form State
-  const [entryTab, setEntryTab] = useState<'expense' | 'cash_request'>('expense');
+  const [entryTab, setEntryTab] = useState<'expense' | 'cash_request' | 'review_queue'>('expense');
   const [expForm, setExpForm] = useState({
     expenseDate: new Date().toISOString().slice(0, 10),
     category: 'Materials',
     description: '',
     amount: '',
     supplierRecipient: '',
+    paymentMethod: 'Cash',
+    employeeName: '',
     prId: '',
     cashRequestId: '',
     custodianName: '',
     remarks: '',
+    noReceiptException: false,
+    exceptionReason: '',
   });
+  const [expReceipts, setExpReceipts] = useState<PendingAttachmentDraft[]>([]);
+  const [expSupports, setExpSupports] = useState<PendingAttachmentDraft[]>([]);
+  const [expError, setExpError] = useState('');
+  const [submittingExp, setSubmittingExp] = useState(false);
+  const [reviewExpenseId, setReviewExpenseId] = useState<number | null>(null);
 
   const [crForm, setCrForm] = useState({
     requestDate: new Date().toISOString().slice(0, 10),
@@ -243,36 +258,97 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
     onRefresh();
   };
 
-  const handleSubmitExpense = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const res = await mutateWithOfflineQueue({
-      method: 'POST',
-      url: `/api/projects/${projectId}/expenses`,
-      body: {
+  const submitExpenseEntry = async (saveAsDraft: boolean) => {
+    setExpError('');
+    if (!expForm.expenseDate || !expForm.description.trim() || !expForm.amount || Number(expForm.amount) <= 0 || !expForm.supplierRecipient.trim()) {
+      setExpError('Date, description, positive amount, and supplier/payee are required.');
+      return;
+    }
+
+    if (!saveAsDraft) {
+      if (expReceipts.length === 0 && !expForm.noReceiptException) {
+        setExpError(
+          'Receipt photograph proof is mandatory to submit a cash liquidation. Upload or take a receipt photo, or enable the controlled No-Receipt Exception workflow.'
+        );
+        return;
+      }
+      if (expForm.noReceiptException && (expForm.exceptionReason.trim().length < 5 || expSupports.length === 0)) {
+        setExpError(
+          'Controlled No-Receipt Exception requires both a clear explanation (at least 5 characters) AND alternative supporting proof uploaded.'
+        );
+        return;
+      }
+    }
+
+    setSubmittingExp(true);
+    try {
+      const payload = {
         expenseDate: expForm.expenseDate,
         category: expForm.category,
-        description: expForm.description,
+        description: expForm.description.trim(),
         amount: Number(expForm.amount),
-        supplierRecipient: expForm.supplierRecipient,
+        supplierRecipient: expForm.supplierRecipient.trim(),
+        paymentMethod: expForm.paymentMethod,
+        employeeName: expForm.employeeName.trim() || expForm.custodianName.trim(),
         prId: expForm.prId ? Number(expForm.prId) : null,
         cashRequestId: expForm.cashRequestId ? Number(expForm.cashRequestId) : null,
-        custodianName: expForm.custodianName,
-        remarks: expForm.remarks,
-      },
-      label: `Expense: ${expForm.description}`,
-    });
-    onNotify(res.queued ? 'Offline: Expense queued for sync.' : 'Expense submitted for Finance review.');
-    setExpForm((prev) => ({
-      ...prev,
-      description: '',
-      amount: '',
-      supplierRecipient: '',
-      prId: '',
-      cashRequestId: '',
-      custodianName: '',
-      remarks: '',
-    }));
-    if (!res.queued) onRefresh();
+        custodianName: expForm.custodianName.trim(),
+        remarks: expForm.remarks.trim(),
+        saveAsDraft,
+        noReceiptException: expForm.noReceiptException,
+        exceptionReason: expForm.exceptionReason.trim(),
+        receiptsBase64: expReceipts.map((r) => ({
+          dataUrl: r.dataUrl,
+          fileName: r.fileName,
+          caption: r.caption,
+          category: r.category,
+        })),
+        supportDocsBase64: expSupports.map((s) => ({
+          dataUrl: s.dataUrl,
+          fileName: s.fileName,
+          caption: s.caption,
+          category: s.category,
+        })),
+      };
+
+      const res = await mutateWithOfflineQueue({
+        method: 'POST',
+        url: `/api/projects/${projectId}/expenses`,
+        body: payload,
+        label: `Expense: ${expForm.description}`,
+      });
+      onNotify(
+        res.queued
+          ? 'Offline: Expense queued for sync.'
+          : saveAsDraft
+          ? 'Expense saved as Draft.'
+          : 'Expense liquidation & receipt submitted for Finance / Supervisor review.'
+      );
+      setExpForm((prev) => ({
+        ...prev,
+        description: '',
+        amount: '',
+        supplierRecipient: '',
+        prId: '',
+        cashRequestId: '',
+        custodianName: '',
+        remarks: '',
+        noReceiptException: false,
+        exceptionReason: '',
+      }));
+      setExpReceipts([]);
+      setExpSupports([]);
+      if (!res.queued) onRefresh();
+    } catch (err: any) {
+      setExpError(err?.message || 'Unable to submit expense liquidation.');
+    } finally {
+      setSubmittingExp(false);
+    }
+  };
+
+  const handleSubmitExpense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitExpenseEntry(false);
   };
 
   const handleCreateCashRequest = async (e: React.FormEvent) => {
@@ -872,11 +948,11 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
                     Log direct/liquidated project expenses under the 12 spreadsheet categories or issue a custodian cash request.
                   </p>
                 </div>
-                <div className="inline-flex rounded-lg bg-slate-100 p-1 text-xs">
+                <div className="inline-flex flex-wrap rounded-lg bg-slate-100 p-1 text-xs">
                   <button
                     type="button"
                     onClick={() => setEntryTab('expense')}
-                    className={`rounded-md px-3 py-1 font-medium transition-colors ${
+                    className={`rounded-md px-3 py-1 font-medium transition-colors whitespace-nowrap ${
                       entryTab === 'expense' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
                     }`}
                   >
@@ -885,139 +961,238 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
                   <button
                     type="button"
                     onClick={() => setEntryTab('cash_request')}
-                    className={`rounded-md px-3 py-1 font-medium transition-colors ${
+                    className={`rounded-md px-3 py-1 font-medium transition-colors whitespace-nowrap ${
                       entryTab === 'cash_request' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
                     }`}
                   >
                     Issue Cash Request
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setEntryTab('review_queue')}
+                    className={`rounded-md px-3 py-1 font-medium transition-colors whitespace-nowrap ${
+                      entryTab === 'review_queue' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
+                    }`}
+                  >
+                    Liquidation Review Queue
+                  </button>
                 </div>
               </div>
 
-              {entryTab === 'expense' ? (
-                <form onSubmit={handleSubmitExpense} className="grid grid-cols-1 gap-3 text-xs md:grid-cols-6">
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Date *</label>
-                    <input
-                      type="date"
-                      required
-                      value={expForm.expenseDate}
-                      onChange={(e) => setExpForm({ ...expForm, expenseDate: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Category *</label>
-                    <select
-                      value={expForm.category}
-                      onChange={(e) => setExpForm({ ...expForm, category: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
-                    >
-                      {SPREADSHEET_EXPENSE_CATEGORIES.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                      <option value="Equipment">Equipment</option>
-                      <option value="Other Expenses">Other Expenses</option>
-                    </select>
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block font-medium text-slate-700 mb-1">Description *</label>
-                    <input
-                      required
-                      placeholder="e.g., Payment for PO#2026-056 or Transportation liquidation"
-                      value={expForm.description}
-                      onChange={(e) => setExpForm({ ...expForm, description: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Amount *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      required
-                      value={expForm.amount}
-                      onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Supplier / Payee *</label>
-                    <input
-                      required
-                      placeholder="Vendor or site payee"
-                      value={expForm.supplierRecipient}
-                      onChange={(e) => setExpForm({ ...expForm, supplierRecipient: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                    />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block font-medium text-slate-700 mb-1">Link to Cash Request (Optional)</label>
-                    <select
-                      value={expForm.cashRequestId}
-                      onChange={(e) => {
-                        const crId = e.target.value;
-                        const matched = cashRequests.find((c) => String(c.id) === crId);
-                        setExpForm({
-                          ...expForm,
-                          cashRequestId: crId,
-                          custodianName: matched ? matched.custodian_name : expForm.custodianName,
-                        });
-                      }}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
-                    >
-                      <option value="">— Direct Expense (Not a Cash Liquidation) —</option>
-                      {cashRequests.map((cr) => (
-                        <option key={cr.id} value={cr.id}>
-                          {cr.request_date} · {cr.description} ({formatCurrencyExact(cr.amount_requested)})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Custodian (Optional)</label>
-                    <input
-                      placeholder="e.g., Tim Mabalot"
-                      value={expForm.custodianName}
-                      onChange={(e) => setExpForm({ ...expForm, custodianName: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Settle PR (Optional)</label>
-                    <select
-                      value={expForm.prId}
-                      onChange={(e) => setExpForm({ ...expForm, prId: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
-                    >
-                      <option value="">— None —</option>
-                      {prs
-                        .filter((pr) => pr.commitment_amount > pr.settled_amount)
-                        .map((pr) => (
-                          <option key={pr.id} value={pr.id}>
-                            {pr.ref_number} ({formatCurrencyExact(pr.commitment_amount - pr.settled_amount)})
+              {entryTab === 'review_queue' ? (
+                <LiquidationReviewView projectId={projectId} embedded onRefreshParent={onRefresh} />
+              ) : entryTab === 'expense' ? (
+                <form onSubmit={handleSubmitExpense} className="space-y-4 text-xs">
+                  {expError && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2 text-red-700">
+                      {expError}
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-6">
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Date *</label>
+                      <input
+                        type="date"
+                        required
+                        value={expForm.expenseDate}
+                        onChange={(e) => setExpForm({ ...expForm, expenseDate: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Category *</label>
+                      <select
+                        value={expForm.category}
+                        onChange={(e) => setExpForm({ ...expForm, category: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+                      >
+                        {SPREADSHEET_EXPENSE_CATEGORIES.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
                           </option>
                         ))}
-                    </select>
+                        <option value="Equipment">Equipment</option>
+                        <option value="Other Expenses">Other Expenses</option>
+                      </select>
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block font-medium text-slate-700 mb-1">Description *</label>
+                      <input
+                        required
+                        placeholder="e.g., Payment for PO#2026-056 or Transportation liquidation"
+                        value={expForm.description}
+                        onChange={(e) => setExpForm({ ...expForm, description: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Amount *</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        required
+                        value={expForm.amount}
+                        onChange={(e) => setExpForm({ ...expForm, amount: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Supplier / Payee *</label>
+                      <input
+                        required
+                        placeholder="Vendor or site payee"
+                        value={expForm.supplierRecipient}
+                        onChange={(e) => setExpForm({ ...expForm, supplierRecipient: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block font-medium text-slate-700 mb-1">Link to Cash Request (Optional)</label>
+                      <select
+                        value={expForm.cashRequestId}
+                        onChange={(e) => {
+                          const crId = e.target.value;
+                          const matched = cashRequests.find((c) => String(c.id) === crId);
+                          setExpForm({
+                            ...expForm,
+                            cashRequestId: crId,
+                            custodianName: matched ? matched.custodian_name : expForm.custodianName,
+                            employeeName: matched ? matched.custodian_name : expForm.employeeName,
+                          });
+                        }}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+                      >
+                        <option value="">— Direct Expense (Not a Cash Liquidation) —</option>
+                        {cashRequests.map((cr) => (
+                          <option key={cr.id} value={cr.id}>
+                            {cr.request_date} · {cr.description} ({formatCurrencyExact(cr.amount_requested)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Employee / Custodian</label>
+                      <input
+                        placeholder="e.g., Tim Mabalot"
+                        value={expForm.custodianName}
+                        onChange={(e) =>
+                          setExpForm({ ...expForm, custodianName: e.target.value, employeeName: e.target.value })
+                        }
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Payment Method</label>
+                      <select
+                        value={expForm.paymentMethod}
+                        onChange={(e) => setExpForm({ ...expForm, paymentMethod: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+                      >
+                        <option value="Cash">Cash</option>
+                        <option value="GCash / E-Wallet">GCash / E-Wallet</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Check">Check</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Settle PR (Optional)</label>
+                      <select
+                        value={expForm.prId}
+                        onChange={(e) => setExpForm({ ...expForm, prId: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5"
+                      >
+                        <option value="">— None —</option>
+                        {prs
+                          .filter((pr) => pr.commitment_amount > pr.settled_amount)
+                          .map((pr) => (
+                            <option key={pr.id} value={pr.id}>
+                              {pr.ref_number} ({formatCurrencyExact(pr.commitment_amount - pr.settled_amount)})
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block font-medium text-slate-700 mb-1">Remarks</label>
+                      <input
+                        placeholder="30% Downpayment / Full Payment"
+                        value={expForm.remarks}
+                        onChange={(e) => setExpForm({ ...expForm, remarks: e.target.value })}
+                        className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block font-medium text-slate-700 mb-1">Remarks</label>
-                    <input
-                      placeholder="30% Downpayment / Full Payment"
-                      value={expForm.remarks}
-                      onChange={(e) => setExpForm({ ...expForm, remarks: e.target.value })}
-                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5"
+
+                  {/* Mandatory Receipt Proof & Controlled No-Receipt Exception */}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <EvidenceFilePicker
+                      label="Receipt Photographs"
+                      helperText="Mandatory for submission: capture a live receipt photo with your camera or upload official receipt photos (JPG/PNG/WEBP)."
+                      items={expReceipts}
+                      onChange={setExpReceipts}
+                      imagesOnly
+                      defaultCategory="Official Receipt"
+                      requiredMark={!expForm.noReceiptException}
                     />
+                    <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                      <label className="inline-flex items-center gap-2 font-semibold text-slate-800 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={expForm.noReceiptException}
+                          onChange={(e) => setExpForm({ ...expForm, noReceiptException: e.target.checked })}
+                        />
+                        <FileWarning className="h-4 w-4 text-amber-600" />
+                        <span>Request Controlled No-Receipt Exception</span>
+                      </label>
+                      {expForm.noReceiptException ? (
+                        <div className="space-y-2.5">
+                          <div className="rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-900">
+                            Requires supervisor/management authorization plus alternative proof (acknowledgment slip,
+                            screenshot, or signed voucher).
+                          </div>
+                          <input
+                            required={expForm.noReceiptException}
+                            placeholder="Explain clearly why an official receipt is unavailable..."
+                            value={expForm.exceptionReason}
+                            onChange={(e) => setExpForm({ ...expForm, exceptionReason: e.target.value })}
+                            className="w-full rounded-lg border border-amber-300 bg-white px-2.5 py-1.5"
+                          />
+                          <EvidenceFilePicker
+                            label="Alternative Supporting Proof"
+                            items={expSupports}
+                            onChange={setExpSupports}
+                            defaultCategory="No-Receipt Alternative Proof"
+                            requiredMark
+                          />
+                        </div>
+                      ) : (
+                        <EvidenceFilePicker
+                          label="Additional Supporting Documents (Optional)"
+                          helperText="Delivery slips, remittance screenshots, or voucher attachments."
+                          items={expSupports}
+                          onChange={setExpSupports}
+                          defaultCategory="Supporting Document"
+                        />
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-end">
+
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      disabled={submittingExp}
+                      onClick={() => submitExpenseEntry(true)}
+                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      Save as Draft
+                    </button>
                     <button
                       type="submit"
-                      className="w-full rounded-lg bg-slate-900 py-2 font-semibold text-white hover:bg-slate-800"
+                      disabled={submittingExp}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-5 py-2 font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
                     >
-                      Submit Expense
+                      <Camera className="h-3.5 w-3.5" />
+                      {submittingExp ? 'Submitting...' : 'Submit Liquidation'}
                     </button>
                   </div>
                 </form>
@@ -1186,40 +1361,33 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
                         <td className="px-3.5 py-2.5 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                           {formatCurrencyExact(ex.amount)}
                         </td>
-                        <td className="px-3.5 py-2.5 text-slate-600">{ex.remarks || '—'}</td>
-                        <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
-                          {ex.status === 'pending' && hasPerm('financials', 'approve') ? (
-                            <div className="inline-flex gap-1">
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await apiRequest(`/api/expenses/${ex.id}/decision`, {
-                                    method: 'PATCH',
-                                    body: { decision: 'approved' },
-                                  });
-                                  onRefresh();
-                                }}
-                                className="rounded bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white"
-                              >
-                                Approve
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  await apiRequest(`/api/expenses/${ex.id}/decision`, {
-                                    method: 'PATCH',
-                                    body: { decision: 'rejected' },
-                                  });
-                                  onRefresh();
-                                }}
-                                className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-700"
-                              >
-                                Reject
-                              </button>
+                        <td className="px-3.5 py-2.5 text-slate-600">
+                          <div>{ex.remarks || '—'}</div>
+                          {ex.receipt_count > 0 ? (
+                            <div className="text-[10px] text-emerald-700">
+                              {ex.receipt_count} receipt photo{ex.receipt_count > 1 ? 's' : ''}
                             </div>
-                          ) : (
+                          ) : ex.no_receipt_exception === 1 ? (
+                            <div className="text-[10px] text-amber-700">No-Receipt Exception</div>
+                          ) : null}
+                        </td>
+                        <td className="px-3.5 py-2.5 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5">
                             <StatusLabel status={ex.status} />
-                          )}
+                            <button
+                              type="button"
+                              onClick={() => setReviewExpenseId(ex.id)}
+                              className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-900 hover:text-white"
+                            >
+                              <Eye className="h-3 w-3" />
+                              {['pending', 'submitted', 'pending_review', 'resubmitted'].includes(ex.status) &&
+                              hasPerm('financials', 'approve')
+                                ? 'Review'
+                                : ['draft', 'for_correction', 'correction_needed'].includes(ex.status)
+                                ? 'Upload / Submit'
+                                : 'Receipts'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1278,40 +1446,33 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
                             <td className="px-3.5 py-2 text-right font-mono font-semibold text-slate-900 tabular-nums whitespace-nowrap">
                               {formatCurrencyExact(ex.amount)}
                             </td>
-                            <td className="px-3.5 py-2 text-slate-500">{ex.remarks || '—'}</td>
-                            <td className="px-3.5 py-2 text-right whitespace-nowrap">
-                              {ex.status === 'pending' && hasPerm('financials', 'approve') ? (
-                                <div className="inline-flex gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await apiRequest(`/api/expenses/${ex.id}/decision`, {
-                                        method: 'PATCH',
-                                        body: { decision: 'approved' },
-                                      });
-                                      onRefresh();
-                                    }}
-                                    className="rounded bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white"
-                                  >
-                                    Approve
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      await apiRequest(`/api/expenses/${ex.id}/decision`, {
-                                        method: 'PATCH',
-                                        body: { decision: 'rejected' },
-                                      });
-                                      onRefresh();
-                                    }}
-                                    className="rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-700"
-                                  >
-                                    Reject
-                                  </button>
+                            <td className="px-3.5 py-2 text-slate-500">
+                              <div>{ex.remarks || '—'}</div>
+                              {ex.receipt_count > 0 ? (
+                                <div className="text-[10px] text-emerald-700">
+                                  {ex.receipt_count} receipt photo{ex.receipt_count > 1 ? 's' : ''}
                                 </div>
-                              ) : (
+                              ) : ex.no_receipt_exception === 1 ? (
+                                <div className="text-[10px] text-amber-700">No-Receipt Exception</div>
+                              ) : null}
+                            </td>
+                            <td className="px-3.5 py-2 text-right whitespace-nowrap">
+                              <div className="inline-flex items-center gap-1.5">
                                 <StatusLabel status={ex.status} />
-                              )}
+                                <button
+                                  type="button"
+                                  onClick={() => setReviewExpenseId(ex.id)}
+                                  className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-900 hover:text-white"
+                                >
+                                  <Eye className="h-3 w-3" />
+                                  {['pending', 'submitted', 'pending_review', 'resubmitted'].includes(ex.status) &&
+                                  hasPerm('financials', 'approve')
+                                    ? 'Review'
+                                    : ['draft', 'for_correction', 'correction_needed'].includes(ex.status)
+                                    ? 'Upload / Submit'
+                                    : 'Receipts'}
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))}
@@ -1433,6 +1594,14 @@ export const ProjectFinancialWorkspace: React.FC<ProjectFinancialWorkspaceProps>
             </div>
           </div>
         </div>
+      )}
+
+      {reviewExpenseId !== null && (
+        <ExpenseReviewModal
+          expenseId={reviewExpenseId}
+          onClose={() => setReviewExpenseId(null)}
+          onUpdated={onRefresh}
+        />
       )}
     </div>
   );

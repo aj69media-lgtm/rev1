@@ -16,15 +16,25 @@ import {
   Wrench,
 } from 'lucide-react';
 import { StatusLabel } from '../components/Charts';
+import { PurchaseRequestsWorkspace } from '../components/PurchaseRequestsWorkspace';
+import {
+  formatTaskStatusLabel,
+  TaskCompletionSubmitModal,
+  TaskVerificationModal,
+} from '../components/TaskCompletionModals';
 import { useAuth } from '../context/AuthContext';
 import { useSync } from '../context/SyncContext';
 import { apiRequest, formatCurrency, getApiToken } from '../lib/api';
 
 // --- Global Tasks Board ---
 export const TasksGlobalView: React.FC = () => {
+  const { hasPerm } = useAuth();
   const { syncVersion } = useSync();
   const [tasks, setTasks] = useState<any[]>([]);
   const [filter, setFilter] = useState('all');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [completionModalTask, setCompletionModalTask] = useState<any | null>(null);
+  const [verifyTaskId, setVerifyTaskId] = useState<number | null>(null);
 
   const load = () => {
     apiRequest('/api/tasks').then((r) => setTasks(r.tasks || [])).catch(() => {});
@@ -32,13 +42,30 @@ export const TasksGlobalView: React.FC = () => {
   useEffect(load, [syncVersion]);
 
   const filtered = filter === 'all' ? tasks : tasks.filter((t) => t.status === filter);
+  const canVerify = hasPerm('tasks', 'verify') || hasPerm('tasks', 'approve');
+
+  const handleStatusChange = async (task: any, nextStatus: string) => {
+    setErrorMsg('');
+    if (nextStatus === 'for_review' || nextStatus === 'completed') {
+      setCompletionModalTask(task);
+      return;
+    }
+    try {
+      await apiRequest(`/api/tasks/${task.id}`, { method: 'PATCH', body: { status: nextStatus } });
+      load();
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Unable to update task status');
+    }
+  };
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900">All Assigned Tasks</h1>
-          <p className="text-xs text-slate-500">Cross-project task queue scoped to your assigned projects.</p>
+          <p className="text-xs text-slate-500">
+            Cross-project task queue with mandatory completion photographic proof and supervisor verification.
+          </p>
         </div>
         <select
           value={filter}
@@ -46,13 +73,22 @@ export const TasksGlobalView: React.FC = () => {
           className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
         >
           <option value="all">All Statuses</option>
-          {['pending', 'in_progress', 'for_review', 'overdue', 'completed'].map((s) => (
-            <option key={s} value={s}>
-              {s.replace(/_/g, ' ')}
-            </option>
-          ))}
+          <option value="pending">Pending</option>
+          <option value="in_progress">In Progress</option>
+          <option value="for_review">Completed — Awaiting Verification</option>
+          <option value="overdue">Overdue</option>
+          <option value="completed">Completed — Verified</option>
         </select>
       </div>
+
+      {errorMsg && (
+        <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-xs text-red-700">
+          <span>{errorMsg}</span>
+          <button type="button" onClick={() => setErrorMsg('')} className="underline">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
         <table className="w-full text-left text-xs">
@@ -64,7 +100,7 @@ export const TasksGlobalView: React.FC = () => {
               <th className="px-4 py-2.5">Assigned Employee</th>
               <th className="px-4 py-2.5">Priority</th>
               <th className="px-4 py-2.5">Deadline</th>
-              <th className="px-4 py-2.5">Status</th>
+              <th className="px-4 py-2.5">Verification &amp; Status</th>
               <th className="px-4 py-2.5 text-right">Action</th>
             </tr>
           </thead>
@@ -87,6 +123,11 @@ export const TasksGlobalView: React.FC = () => {
                         {t.description}
                       </p>
                     )}
+                    {t.photo_count > 0 && (
+                      <div className="mt-1 text-[11px] font-medium text-emerald-700">
+                        {t.photo_count} completion photo{t.photo_count > 1 ? 's' : ''} attached
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-slate-700">
                     {t.assigned_to_name ? (
@@ -102,20 +143,49 @@ export const TasksGlobalView: React.FC = () => {
                   </td>
                   <td className={`px-4 py-3 capitalize ${pColor}`}>{t.priority || 'medium'}</td>
                   <td className="px-4 py-3 font-mono">{t.deadline}</td>
-                  <td className="px-4 py-3"><StatusLabel status={t.status} /></td>
-                  <td className="px-4 py-3 text-right">
-                    <select
-                      value={t.status}
-                      onChange={async (e) => {
-                        await apiRequest(`/api/tasks/${t.id}`, { method: 'PATCH', body: { status: e.target.value } });
-                        load();
-                      }}
-                      className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                    >
-                      {['pending', 'acknowledged', 'in_progress', 'for_review', 'completed', 'on_hold'].map((st) => (
-                        <option key={st} value={st}>{st.replace(/_/g, ' ')}</option>
-                      ))}
-                    </select>
+                  <td className="px-4 py-3">
+                    <StatusLabel status={t.status} labelOverride={formatTaskStatusLabel(t)} />
+                  </td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex flex-wrap justify-end items-center gap-1.5">
+                      {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                        <button
+                          type="button"
+                          onClick={() => setCompletionModalTask(t)}
+                          className="rounded border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-800 hover:bg-slate-100"
+                        >
+                          Submit Proof
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setVerifyTaskId(t.id)}
+                        className={`rounded px-2.5 py-1 text-[11px] font-medium ${
+                          t.status === 'for_review' && canVerify
+                            ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                            : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        {t.status === 'for_review' && canVerify ? 'Verify' : 'Evidence'}
+                      </button>
+                      {t.status !== 'completed' && hasPerm('tasks', 'edit') && (
+                        <select
+                          value={t.status}
+                          onChange={(e) => handleStatusChange(t, e.target.value)}
+                          className="rounded border border-slate-300 bg-white px-2 py-1 text-xs"
+                        >
+                          {['pending', 'acknowledged', 'in_progress', 'for_review', 'completed', 'on_hold'].map((st) => (
+                            <option key={st} value={st}>
+                              {st === 'for_review'
+                                ? 'submit for review'
+                                : st === 'completed'
+                                ? 'complete (requires photo)'
+                                : st.replace(/_/g, ' ')}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                   </td>
                 </tr>
               );
@@ -123,127 +193,38 @@ export const TasksGlobalView: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {completionModalTask && (
+        <TaskCompletionSubmitModal
+          task={completionModalTask}
+          onClose={() => setCompletionModalTask(null)}
+          onSubmitted={load}
+        />
+      )}
+
+      {verifyTaskId !== null && (
+        <TaskVerificationModal
+          taskId={verifyTaskId}
+          onClose={() => setVerifyTaskId(null)}
+          onUpdated={load}
+          onOpenResubmit={(task) => setCompletionModalTask(task)}
+        />
+      )}
     </div>
   );
 };
 
 // --- Procurement Hub ---
 export const ProcurementGlobalView: React.FC = () => {
-  const { hasPerm } = useAuth();
-  const { syncVersion } = useSync();
-  const [prs, setPrs] = useState<any[]>([]);
-  const [pos, setPos] = useState<any[]>([]);
-
-  const load = () => {
-    apiRequest('/api/purchase-requests')
-      .then((r) => {
-        setPrs(r.purchaseRequests || []);
-        setPos(r.purchaseOrders || []);
-      })
-      .catch(() => {});
-  };
-  useEffect(load, [syncVersion]);
-
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-bold text-slate-900">Procurement & Purchase Requests</h1>
+        <h1 className="font-display text-2xl font-bold text-slate-900">Procurement &amp; Purchase Requests</h1>
         <p className="text-xs text-slate-500">
-          Multi-stage PR approvals create tracked commitments; receiving settles actual expenditure without double-counting.
+          Multi-item Purchase Requests, partial approvals, PO supplier assignment, and physical warehouse receiving.
         </p>
       </div>
-
-      <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-        <table className="w-full text-left text-xs">
-          <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-            <tr>
-              <th className="px-4 py-2.5">PR Ref</th>
-              <th className="px-4 py-2.5">Project</th>
-              <th className="px-4 py-2.5">Item</th>
-              <th className="px-4 py-2.5 text-right">Est. Cost</th>
-              <th className="px-4 py-2.5 text-right">Commitment</th>
-              <th className="px-4 py-2.5 text-right">Settled</th>
-              <th className="px-4 py-2.5">Status</th>
-              <th className="px-4 py-2.5 text-right">Workflow</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {prs.map((pr) => (
-              <tr key={pr.id}>
-                <td className="px-4 py-2.5 font-mono">{pr.ref_number}</td>
-                <td className="px-4 py-2.5">{pr.project_name}</td>
-                <td className="px-4 py-2.5 font-medium text-slate-900">{pr.item_description}</td>
-                <td className="px-4 py-2.5 text-right font-mono tabular-nums">{formatCurrency(pr.estimated_total_cost)}</td>
-                <td className="px-4 py-2.5 text-right font-mono tabular-nums text-amber-800">{formatCurrency(pr.commitment_amount)}</td>
-                <td className="px-4 py-2.5 text-right font-mono tabular-nums text-emerald-700">{formatCurrency(pr.settled_amount)}</td>
-                <td className="px-4 py-2.5"><StatusLabel status={pr.status} /></td>
-                <td className="px-4 py-2.5 text-right space-x-1.5">
-                  {['submitted', 'under_review', 'endorsed'].includes(pr.status) && hasPerm('procurement', 'approve') && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await apiRequest(`/api/purchase-requests/${pr.id}/workflow`, {
-                          method: 'PATCH',
-                          body: { status: 'approved', remarks: 'Approved from Procurement Hub' },
-                        });
-                        load();
-                      }}
-                      className="rounded bg-emerald-700 px-2.5 py-1 text-[11px] font-medium text-white"
-                    >
-                      Approve
-                    </button>
-                  )}
-                  {pr.status === 'approved' && hasPerm('procurement', 'edit') && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await apiRequest(`/api/purchase-requests/${pr.id}/workflow`, {
-                          method: 'PATCH',
-                          body: { status: 'ordered' },
-                        });
-                        load();
-                      }}
-                      className="rounded bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white"
-                    >
-                      Issue PO
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {pos.length > 0 && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-          <div className="border-b border-slate-200 px-4 py-3 font-display text-sm font-semibold text-slate-900">
-            Purchase Orders & Receiving
-          </div>
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-              <tr>
-                <th className="px-4 py-2.5">PO #</th>
-                <th className="px-4 py-2.5">Supplier</th>
-                <th className="px-4 py-2.5 text-right">Ordered / Delivered</th>
-                <th className="px-4 py-2.5 text-right">Actual Total</th>
-                <th className="px-4 py-2.5">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {pos.map((po) => (
-                <tr key={po.id}>
-                  <td className="px-4 py-2.5 font-mono">{po.po_number}</td>
-                  <td className="px-4 py-2.5">{po.supplier_name}</td>
-                  <td className="px-4 py-2.5 text-right font-mono tabular-nums">{po.ordered_qty} / {po.delivered_qty}</td>
-                  <td className="px-4 py-2.5 text-right font-mono tabular-nums">{formatCurrency(po.actual_total_cost)}</td>
-                  <td className="px-4 py-2.5"><StatusLabel status={po.status} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <PurchaseRequestsWorkspace />
     </div>
   );
 };

@@ -376,4 +376,472 @@ export function ensureQuotationReferenceData(): void {
       }
     }
   });
+
+  ensureCatalogOfWorksSeed();
 }
+
+export function ensureCatalogOfWorksSeed(): void {
+  transaction(() => {
+    // A. Ensure all configurable units exist
+    const allUnits: Array<[string, string]> = [
+      ['lot', 'Lot'],
+      ['pcs', 'Pieces'],
+      ['set/s', 'Sets'],
+      ['assy', 'Assembly'],
+      ['unit', 'Units'],
+      ['sqm', 'Square Meters (sqm)'],
+      ['sq.m', 'Square Meters (sq.m)'],
+      ['cu.m', 'Cubic Meters (cu.m)'],
+      ['cu.m.', 'Cubic Meters (cu.m.)'],
+      ['ln.m', 'Linear Meters (ln.m)'],
+      ['bags', 'Bags'],
+      ['kgs', 'Kilograms'],
+      ['kg', 'Kilograms (kg)'],
+      ['sheet', 'Sheets'],
+      ['roll', 'Rolls'],
+      ['gals', 'Gallons'],
+      ['box', 'Boxes'],
+      ['pair', 'Pairs'],
+      ['tubes', 'Tubes'],
+      ['lengths', 'Standard Lengths (6m)'],
+      ['day', 'Man-Days'],
+      ['days', 'Days'],
+      ['hours', 'Hours'],
+    ];
+    const insUnit = db.prepare('INSERT OR IGNORE INTO quotation_units (code, label) VALUES (?, ?)');
+    for (const [code, label] of allUnits) insUnit.run(code, label);
+
+    // B. Ensure all required Work Categories exist (all 17 Part 2.3 categories)
+    const allCategories: Array<[string, string, number]> = [
+      ['General Requirements', 'A', 1],
+      ['Masonry Works', 'B', 2],
+      ['Tiling Works', 'B', 3],
+      ['Painting Works', 'B', 4],
+      ['Carpentry Works', 'B', 5],
+      ['Custom Millwork', 'B', 6],
+      ['Doors & Windows', 'B', 7],
+      ['Plumbing Works', 'B', 8],
+      ['Electrical Works', 'B', 9],
+      ['Commercial Fixtures', 'C', 10],
+      ['Concrete Works', 'B', 11],
+      ['Waterproofing Works', 'B', 12],
+      ['Ceiling Works', 'B', 13],
+      ['Roofing Works', 'B', 14],
+      ['Metal Works', 'B', 15],
+      ['Fabrication Works', 'C', 16],
+      ['Custom Works', 'B', 17],
+    ];
+    const insCat = db.prepare(
+      'INSERT OR IGNORE INTO quotation_categories (name, section_default, sort_order) VALUES (?, ?, ?)'
+    );
+    for (const [name, sec, ord] of allCategories) insCat.run(name, sec, ord);
+
+    // C. Update item_type on existing GR items cleanly
+    db.prepare("UPDATE quotation_catalog_items SET item_type = 'Service' WHERE is_general_requirement = 1 AND item_type = 'Material'").run();
+
+    // D. Seed essential construction Material & Labor items for Sets of Works (idempotent INSERT OR IGNORE)
+    const prepUser = db.prepare('SELECT id FROM users ORDER BY id ASC LIMIT 1').get() as { id: number } | undefined;
+    const moreItems: Array<{
+      code: string;
+      name: string;
+      desc: string;
+      spec: string;
+      cat: string;
+      sub: string;
+      unit: string;
+      type: string;
+      matCost: number;
+      lbrCost: number;
+      supplier: string;
+    }> = [
+      { code: 'RBR-10', name: 'Deformed Rebar, 10mm x 6m', desc: 'rebar, 10 mm Grade 40', spec: 'ASTM A615 / PNS 49', cat: 'Masonry Works', sub: 'Reinforcement', unit: 'pcs', type: 'Material', matCost: 189, lbrCost: 75.6, supplier: 'Pag-asa Steel' },
+      { code: 'CHB-4', name: 'Concrete Hollow Blocks 4" thk', desc: "CHB 4'' thk standard", spec: '400 psi non-load bearing', cat: 'Masonry Works', sub: 'Blocks', unit: 'pcs', type: 'Material', matCost: 21, lbrCost: 8.4, supplier: 'Cebu Concrete Corp' },
+      { code: 'CEM-40', name: 'Portland Cement, 40kg Bag', desc: 'Portland Cement Type I', spec: '40kg/bag', cat: 'Masonry Works', sub: 'Binders', unit: 'bags', type: 'Material', matCost: 253, lbrCost: 101.2, supplier: 'Republic Cement' },
+      { code: 'TIL-6060', name: 'Tiles, 60cm x 60cm Polished Porcelain White', desc: 'Polished Porcelain Floor Tile 600x600mm', spec: 'Rectified edge, glossy white', cat: 'Tiling Works', sub: 'Floor Tiles', unit: 'pcs', type: 'Material', matCost: 200, lbrCost: 80, supplier: 'Wilcon Depot' },
+      { code: 'TIL-ADH', name: 'ABC Tile Adhesive, 25kg', desc: 'ABC Tile Adhesive 25kgs bag', spec: 'Heavy-duty polymer modified', cat: 'Tiling Works', sub: 'Adhesives', unit: 'bags', type: 'Material', matCost: 330, lbrCost: 132, supplier: 'ABC Chemical' },
+      { code: 'PNT-SKM', name: 'MondoSkim Coat, 20kg Bag', desc: 'Interior concrete skim coat 20kg', spec: '20 sq.m coverage/bag', cat: 'Painting Works', sub: 'Surface Prep', unit: 'bags', type: 'Material', matCost: 560, lbrCost: 224, supplier: 'Davies Paints' },
+      { code: 'PNT-TOP', name: 'Davies Megacryl Semi-Gloss Topcoat', desc: 'Water-based acrylic semi-gloss finish', spec: '1 gallon container', cat: 'Painting Works', sub: 'Topcoat', unit: 'gals', type: 'Material', matCost: 820, lbrCost: 328, supplier: 'Davies Paints' },
+      { code: 'PLM-WC', name: 'Water Closet Set (Dual Flush)', desc: 'One-piece ceramic water closet with seat cover & angle valve', spec: '3/6L dual flush', cat: 'Plumbing Works', sub: 'Fixtures', unit: 'set/s', type: 'Material', matCost: 8270, lbrCost: 2067.5, supplier: 'HCG Philippines' },
+      { code: 'ELC-FLR', name: 'LED Fluorescent Light Fixture', desc: 'Linear LED batten / recessed light 18W daylight', spec: '220V 6500K', cat: 'Electrical Works', sub: 'Lighting', unit: 'pcs', type: 'Material', matCost: 350, lbrCost: 87.5, supplier: 'Firefly Electric' },
+      { code: 'TIE-16', name: 'GI Tie Wire #16', desc: 'Galvanized iron tie wire gauge #16', spec: 'Standard 1.6mm galvanized binding wire', cat: 'Masonry Works', sub: 'Reinforcement', unit: 'kg', type: 'Material', matCost: 95, lbrCost: 0, supplier: 'Hardware & Fasteners PH' },
+      { code: 'SND-WSH', name: 'Washed River Sand (S1)', desc: 'Screened washed sand for masonry mortar & plastering', spec: 'Fine clean river sand', cat: 'Masonry Works', sub: 'Aggregates', unit: 'cu.m', type: 'Material', matCost: 1450, lbrCost: 0, supplier: 'Cebu Aggregates & Hardware' },
+      { code: 'CBD-12', name: 'Cement Board 12mm (4x8 ft)', desc: 'High-density fiber cement backing board for counters & wet areas', spec: '1220 x 2440 x 12mm moisture resistant', cat: 'Carpentry Works', sub: 'Boards', unit: 'sheet', type: 'Material', matCost: 920, lbrCost: 0, supplier: 'Wilcon Depot' },
+      { code: 'WPR-MEM', name: 'Elastomeric Liquid Waterproofing Membrane', desc: 'Acrylic elastomeric waterproofing coating', spec: '20L pail / 2-coat system', cat: 'Waterproofing Works', sub: 'Coatings', unit: 'gals', type: 'Material', matCost: 980, lbrCost: 220, supplier: 'ABC Chemical' },
+      { code: 'LBR-MAS', name: 'Skilled Mason (Daily Rate)', desc: 'Qualified CHB laying, concrete & plastering mason', spec: '8-hour standard shift', cat: 'Masonry Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 850, supplier: 'Internal Workforce' },
+      { code: 'LBR-HLP', name: 'Construction Helper / Laborer (Daily Rate)', desc: 'Material handling, mixing & general site support helper', spec: '8-hour standard shift', cat: 'Masonry Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 650, supplier: 'Internal Workforce' },
+      { code: 'LBR-TIL', name: 'Skilled Tile Setter (Daily Rate)', desc: 'Precision floor/wall tile layout, cutting & grouting specialist', spec: '8-hour standard shift', cat: 'Tiling Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 900, supplier: 'Internal Workforce' },
+      { code: 'LBR-PNT', name: 'Skilled Painter (Daily Rate)', desc: 'Surface skim coating, sanding & finish coat painter', spec: '8-hour standard shift', cat: 'Painting Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 820, supplier: 'Internal Workforce' },
+      { code: 'LBR-PLM', name: 'Licensed Plumber (Daily Rate)', desc: 'Waterline, sanitary drainage & fixture installation plumber', spec: '8-hour standard shift', cat: 'Plumbing Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 920, supplier: 'Internal Workforce' },
+      { code: 'LBR-ELC', name: 'Licensed Electrician (Daily Rate)', desc: 'Conduit, wiring, termination & lighting installation electrician', spec: '8-hour standard shift', cat: 'Electrical Works', sub: 'Labor', unit: 'day', type: 'Labor', matCost: 0, lbrCost: 950, supplier: 'Internal Workforce' },
+    ];
+    const insMore = db.prepare(
+      `INSERT OR IGNORE INTO quotation_catalog_items (
+        item_code, name, description, specification, category, subcategory, default_unit,
+        item_type, mat_unit_cost, lbr_unit_cost, default_mat_gp_pct, default_lbr_gp_pct,
+        supplier_ref, is_general_requirement, calc_rule, is_active, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.3, 0.3, ?, 0, 'fixed', 1, ?)`
+    );
+    for (const it of moreItems) {
+      insMore.run(it.code, it.name, it.desc, it.spec, it.cat, it.sub, it.unit, it.type, it.matCost, it.lbrCost, it.supplier, prepUser?.id || null);
+    }
+
+    // E. Seed Master Suppliers Directory
+    const supplierSeed: Array<[string, string, string, string, string, string, string]> = [
+      ['SUP-001', 'Cebu Concrete Corp', 'Ramon Villanueva', 'sales@cebuconcrete.example', '(+6332) 412-8801', 'Mandaue City, Cebu', 'Masonry & Concrete'],
+      ['SUP-002', 'Pag-asa Steel', 'Elena Soriano', 'orders@pagasasteel.example', '(+632) 8631-2100', 'Pasig City, Metro Manila', 'Rebar & Structural Steel'],
+      ['SUP-003', 'Republic Cement', 'Carlo Mendoza', 'trade@republiccement.example', '(+632) 8819-5510', 'Taguig City, Metro Manila', 'Cement & Binders'],
+      ['SUP-004', 'Wilcon Depot', 'Grace Bautista', 'b2b@wilcon.example', '(+632) 8634-8387', 'Quezon City, Metro Manila', 'Tiles, Plumbing & Hardware'],
+      ['SUP-005', 'ABC Chemical', 'Victor Lim', 'commercial@abcchemical.example', '(+632) 8361-9900', 'Valenzuela City, Metro Manila', 'Adhesives & Waterproofing'],
+      ['SUP-006', 'Davies Paints', 'Patricia Tan', 'projects@daviespaints.example', '(+632) 8641-7101', 'Pasig City, Metro Manila', 'Paints & Coatings'],
+      ['SUP-007', 'DecoBuild Supplies', 'Mark Reyes', 'hello@decobuild.example', '(+632) 8522-1490', 'Makati City, Metro Manila', 'Acoustic & Interior Finishes'],
+      ['SUP-008', 'Sta. Clara Lumber', 'Nestor Cruz', 'sales@staclaralumber.example', '(+632) 8441-3020', 'Caloocan City, Metro Manila', 'Plywood & Millwork'],
+      ['SUP-009', 'Matimco', 'Diane Go', 'orders@matimco.example', '(+6332) 346-1080', 'Mandaue City, Cebu', 'Doors & Engineered Wood'],
+      ['SUP-010', 'HCG Philippines', 'Bryan Sy', 'projects@hcg.example', '(+632) 8895-0012', 'Makati City, Metro Manila', 'Sanitary & Plumbing Fixtures'],
+      ['SUP-011', 'Firefly Electric', 'Kevin Ong', 'sales@firefly.example', '(+632) 8789-1000', 'Pasig City, Metro Manila', 'Electrical & Lighting'],
+      ['SUP-012', 'Cebu Aggregates & Hardware', 'Joel Navarro', 'dispatch@cebuaggregates.example', '(+6332) 254-3318', 'Cebu City, Cebu', 'Aggregates, CHB & Hardware'],
+      ['SUP-013', 'Metro Steel Supply', 'Sandra Co', 'quotes@metrosteel.example', '(+632) 8701-4422', 'Quezon City, Metro Manila', 'Rebar, Tie Wire & Metal'],
+      ['SUP-014', 'Hardware & Fasteners PH', 'Allan Santos', 'sales@fastenersph.example', '(+632) 8551-7710', 'Mandaluyong City, Metro Manila', 'Consumables & Fasteners'],
+    ];
+    const insSup = db.prepare(
+      `INSERT OR IGNORE INTO suppliers (supplier_code, name, contact_person, email, phone, address, category_tags, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    for (const s of supplierSeed) insSup.run(...s, prepUser?.id || null);
+
+    // F. Seed Multi-Supplier Material Price Records (idempotent per item+supplier pair)
+    {
+      const getItem = (code: string) =>
+        db.prepare('SELECT id, default_unit, mat_unit_cost, specification FROM quotation_catalog_items WHERE item_code = ?').get(code) as any;
+      const getSup = (name: string) =>
+        db.prepare('SELECT id FROM suppliers WHERE name = ?').get(name) as { id: number } | undefined;
+
+      const hasPrice = db.prepare(
+        'SELECT 1 FROM catalog_item_supplier_prices WHERE catalog_item_id = ? AND supplier_id = ? LIMIT 1'
+      );
+      const hasPreferred = db.prepare(
+        'SELECT 1 FROM catalog_item_supplier_prices WHERE catalog_item_id = ? AND is_preferred = 1 LIMIT 1'
+      );
+      const insPrice = db.prepare(
+        `INSERT INTO catalog_item_supplier_prices (
+          catalog_item_id, supplier_id, supplier_item_ref, brand, specifications, unit,
+          unit_price, effective_date, is_preferred, is_active, remarks, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, date('now'), ?, 1, ?, ?)`
+      );
+
+      const linkPrice = (
+        itemCode: string,
+        supplierName: string,
+        ref: string,
+        brand: string,
+        price: number,
+        preferred: number,
+        remarks: string
+      ) => {
+        const it = getItem(itemCode);
+        const sup = getSup(supplierName);
+        if (!it || !sup) return;
+        if (hasPrice.get(it.id, sup.id)) return;
+        const setPref = preferred && !hasPreferred.get(it.id) ? 1 : 0;
+        insPrice.run(it.id, sup.id, ref, brand, it.specification || '', it.default_unit, price, setPref, remarks, prepUser?.id || null);
+      };
+
+      // Multi-supplier comparisons for key materials
+      linkPrice('CHB-4', 'Cebu Concrete Corp', 'CCC-CHB4-STD', 'CebuCrete', 21.0, 1, 'Baseline preferred Cebu CHB supplier');
+      linkPrice('CHB-4', 'Cebu Aggregates & Hardware', 'CAH-BLK-4', 'VisayasBlock', 19.75, 0, 'Pickup bulk rate (>500 pcs)');
+      linkPrice('CHB-4', 'Wilcon Depot', 'WLC-CHB-04', 'StrongBlock', 22.5, 0, 'Metro retail branch rate');
+
+      linkPrice('RBR-10', 'Pag-asa Steel', 'PGS-10MM-G40', 'Pag-asa Steel', 189.0, 1, 'Primary Grade 40 6m rebar');
+      linkPrice('RBR-10', 'Metro Steel Supply', 'MSS-RBR10-6M', 'Capitol Steel', 184.5, 0, 'Minimum 100 lengths order');
+
+      linkPrice('CEM-40', 'Republic Cement', 'REP-T1-40KG', 'Republic Type I', 253.0, 1, 'Standard 40kg Portland cement');
+      linkPrice('CEM-40', 'Wilcon Depot', 'WLC-CEM-40', 'Holcim Excel', 260.0, 0, 'Store pickup price');
+
+      linkPrice('TIE-16', 'Hardware & Fasteners PH', 'HFP-TW16', 'GalvaBind', 95.0, 1, 'Standard #16 GI tie wire');
+      linkPrice('TIE-16', 'Metro Steel Supply', 'MSS-TW16', 'SteelTie', 91.0, 0, '25kg coil equivalent per kg');
+
+      linkPrice('SND-WSH', 'Cebu Aggregates & Hardware', 'CAH-SND-S1', 'Washed River S1', 1450.0, 1, 'Delivered within Metro Cebu');
+      linkPrice('TIL-6060', 'Wilcon Depot', 'WLC-POR-6060', 'Mariwasa / Wilcon', 200.0, 1, '60x60 Polished Porcelain White');
+      linkPrice('TIL-ADH', 'ABC Chemical', 'ABC-ADH-25', 'ABC Heavy Duty', 330.0, 1, '25kg bag tile adhesive');
+      linkPrice('PNT-SKM', 'Davies Paints', 'DAV-SKM-20', 'MondoSkim', 560.0, 1, '20kg interior skim coat');
+      linkPrice('PNT-TOP', 'Davies Paints', 'DAV-MEG-1G', 'Megacryl', 820.0, 1, '1 gallon semi-gloss topcoat');
+      linkPrice('CBD-12', 'Wilcon Depot', 'WLC-CBD-12', 'HardieFlex', 920.0, 1, '12mm fiber cement board 4x8');
+      linkPrice('PLM-WC', 'HCG Philippines', 'HCG-WC-DUAL', 'HCG', 8270.0, 1, 'Complete dual flush set');
+      linkPrice('ELC-FLR', 'Firefly Electric', 'FFY-LED-18W', 'Firefly', 350.0, 1, '18W 6500K LED linear fixture');
+    }
+
+    // G. Seed Reusable Sets of Works (Work Assemblies) with Version 1 Snapshots (idempotent)
+    {
+      const getCat = (name: string) =>
+        db.prepare('SELECT id, name FROM quotation_categories WHERE name = ?').get(name) as { id: number; name: string } | undefined;
+      const getIt = (code: string) =>
+        db.prepare('SELECT * FROM quotation_catalog_items WHERE item_code = ?').get(code) as any;
+      const getSupId = (name: string) =>
+        (db.prepare('SELECT id FROM suppliers WHERE name = ?').get(name) as { id: number } | undefined)?.id ?? null;
+
+      type SeedComp = {
+        code: string;
+        type: string;
+        basis: 'per_unit' | 'fixed';
+        rate: number;
+        wastage: number;
+        supplierName?: string;
+        notes?: string;
+      };
+
+      const seedAssembly = (def: {
+        asmCode: string;
+        name: string;
+        category: string;
+        desc: string;
+        spec: string;
+        unit: string;
+        calcMethod: string;
+        defaultQty: number;
+        laborReq: string;
+        instructions: string;
+        notes: string;
+        components: SeedComp[];
+      }) => {
+        const existingAsm = db
+          .prepare('SELECT id, current_version FROM work_assemblies WHERE assembly_code = ?')
+          .get(def.asmCode) as { id: number; current_version: number } | undefined;
+
+        let assemblyId = existingAsm?.id;
+        if (!assemblyId) {
+          const cat = getCat(def.category);
+          const aRes = db
+            .prepare(
+              `INSERT INTO work_assemblies (
+                assembly_code, name, category_id, category_name, description, specifications,
+                unit, default_calc_method, default_qty, labor_requirements, installation_instructions,
+                notes, current_version, is_active, created_by, updated_by
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`
+            )
+            .run(
+              def.asmCode,
+              def.name,
+              cat?.id ?? null,
+              def.category,
+              def.desc,
+              def.spec,
+              def.unit,
+              def.calcMethod,
+              def.defaultQty,
+              def.laborReq,
+              def.instructions,
+              def.notes,
+              prepUser?.id || null,
+              prepUser?.id || null
+            );
+          assemblyId = Number(aRes.lastInsertRowid);
+        }
+
+        const hasComp = db.prepare(
+          'SELECT 1 FROM work_assembly_items WHERE assembly_id = ? AND item_code = ? LIMIT 1'
+        );
+        const insComp = db.prepare(
+          `INSERT INTO work_assembly_items (
+            assembly_id, catalog_item_id, component_type, item_code, item_name,
+            specification, unit, calc_basis, consumption_rate, wastage_pct,
+            preferred_supplier_id, notes, sort_order
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        );
+
+        const compRows: any[] = [];
+        let addedAnyComp = false;
+        def.components.forEach((c, idx) => {
+          const it = getIt(c.code);
+          if (!it) return;
+          const supId = c.supplierName ? getSupId(c.supplierName) : null;
+          if (!hasComp.get(assemblyId, it.item_code)) {
+            addedAnyComp = true;
+            insComp.run(
+              assemblyId,
+              it.id,
+              c.type,
+              it.item_code,
+              it.name,
+              it.specification || '',
+              it.default_unit,
+              c.basis,
+              c.rate,
+              c.wastage,
+              supId,
+              c.notes || '',
+              idx + 1
+            );
+          }
+          compRows.push({
+            catalog_item_id: it.id,
+            component_type: c.type,
+            item_code: it.item_code,
+            item_name: it.name,
+            specification: it.specification || '',
+            unit: it.default_unit,
+            calc_basis: c.basis,
+            consumption_rate: c.rate,
+            wastage_pct: c.wastage,
+            preferred_supplier_id: supId,
+            notes: c.notes || '',
+            sort_order: idx + 1,
+          });
+        });
+
+        const snapshotPayload = JSON.stringify({
+          assembly_code: def.asmCode,
+          name: def.name,
+          category_name: def.category,
+          description: def.desc,
+          specifications: def.spec,
+          unit: def.unit,
+          default_calc_method: def.calcMethod,
+          default_qty: def.defaultQty,
+          labor_requirements: def.laborReq,
+          installation_instructions: def.instructions,
+          notes: def.notes,
+          components: compRows,
+        });
+
+        const hasV1 = db
+          .prepare('SELECT id FROM work_assembly_versions WHERE assembly_id = ? AND version_number = 1')
+          .get(assemblyId);
+        if (!hasV1) {
+          db.prepare(
+            `INSERT INTO work_assembly_versions (assembly_id, version_number, change_summary, snapshot_json, changed_by)
+             VALUES (?, 1, 'Initial master template baseline', ?, ?)`
+          ).run(assemblyId, snapshotPayload, prepUser?.id || null);
+        } else if (addedAnyComp && existingAsm?.current_version === 1) {
+          db.prepare(
+            `UPDATE work_assembly_versions SET snapshot_json = ? WHERE assembly_id = ? AND version_number = 1`
+          ).run(snapshotPayload, assemblyId);
+        }
+      };
+
+      seedAssembly({
+        asmCode: 'SOW-MAS-001',
+        name: 'Interior Wall Construction',
+        category: 'Masonry Works',
+        desc: 'Construction of an interior CHB 4" partition wall, including vertical/horizontal rebar reinforcement, GI tie wire, mortar & plastering.',
+        spec: '100mm CHB non-load bearing partition with 10mm rebar @ 600mm O.C.',
+        unit: 'sq.m',
+        calcMethod: 'per_sqm',
+        defaultQty: 1,
+        laborReq: '1 Skilled Mason + 1 Helper per 8 sq.m/day',
+        instructions: 'Layout floor line, drill dowel starters, lay CHB with Class B mortar, grout cells at rebar locations.',
+        notes: 'Configurable baseline template; verify slab dowel clearances prior to pouring.',
+        components: [
+          { code: 'CHB-4', type: 'Material', basis: 'per_unit', rate: 12.5, wastage: 5, supplierName: 'Cebu Concrete Corp', notes: '12.5 pcs per sq.m' },
+          { code: 'RBR-10', type: 'Material', basis: 'per_unit', rate: 0.75, wastage: 5, supplierName: 'Pag-asa Steel', notes: 'Vertical & horizontal reinforcement' },
+          { code: 'TIE-16', type: 'Material', basis: 'per_unit', rate: 0.12, wastage: 5, supplierName: 'Hardware & Fasteners PH', notes: 'Rebar intersections' },
+          { code: 'CEM-40', type: 'Material', basis: 'per_unit', rate: 0.65, wastage: 5, supplierName: 'Republic Cement', notes: 'Mortar + 2-side plastering' },
+          { code: 'SND-WSH', type: 'Material', basis: 'per_unit', rate: 0.055, wastage: 10, supplierName: 'Cebu Aggregates & Hardware', notes: 'Screened washed sand' },
+          { code: 'LBR-MAS', type: 'Labor', basis: 'per_unit', rate: 0.125, wastage: 0, notes: 'Mason output ~8 sq.m/day' },
+          { code: 'LBR-HLP', type: 'Labor', basis: 'per_unit', rate: 0.125, wastage: 0, notes: 'Helper support' },
+        ],
+      });
+
+      seedAssembly({
+        asmCode: 'SOW-MAS-002',
+        name: 'Pantry Counter Construction',
+        category: 'Masonry Works',
+        desc: 'Reinforced CHB & cement board pantry counter substructure with tile adhesive and ceramic/porcelain finish.',
+        spec: '600mm deep x 850mm high masonry base with fiber cement top substrate',
+        unit: 'ln.m',
+        calcMethod: 'per_lnm',
+        defaultQty: 1,
+        laborReq: '1 Mason + 1 Helper',
+        instructions: 'Erect CHB support piers, anchor fiber cement board substrate, apply adhesive and porcelain counter tiles.',
+        notes: 'Plumbing sink cutout & faucet rough-in coordinated separately.',
+        components: [
+          { code: 'CHB-4', type: 'Material', basis: 'per_unit', rate: 10, wastage: 5, supplierName: 'Cebu Concrete Corp', notes: 'Base piers & walls' },
+          { code: 'RBR-10', type: 'Material', basis: 'per_unit', rate: 1.2, wastage: 5, supplierName: 'Pag-asa Steel', notes: 'Counter slab reinforcement' },
+          { code: 'TIE-16', type: 'Material', basis: 'per_unit', rate: 0.15, wastage: 5, supplierName: 'Hardware & Fasteners PH' },
+          { code: 'CEM-40', type: 'Material', basis: 'per_unit', rate: 0.9, wastage: 5, supplierName: 'Republic Cement' },
+          { code: 'SND-WSH', type: 'Material', basis: 'per_unit', rate: 0.07, wastage: 10, supplierName: 'Cebu Aggregates & Hardware' },
+          { code: 'CBD-12', type: 'Material', basis: 'per_unit', rate: 0.35, wastage: 5, supplierName: 'Wilcon Depot', notes: 'Moisture-resistant backing' },
+          { code: 'TIL-ADH', type: 'Material', basis: 'per_unit', rate: 0.4, wastage: 5, supplierName: 'ABC Chemical' },
+          { code: 'TIL-6060', type: 'Material', basis: 'per_unit', rate: 2.8, wastage: 10, supplierName: 'Wilcon Depot', notes: 'Countertop tile finish' },
+          { code: 'LBR-MAS', type: 'Labor', basis: 'per_unit', rate: 0.5, wastage: 0 },
+          { code: 'LBR-HLP', type: 'Labor', basis: 'per_unit', rate: 0.5, wastage: 0 },
+        ],
+      });
+
+      seedAssembly({
+        asmCode: 'SOW-TIL-001',
+        name: 'Floor Tiling (60x60 Porcelain)',
+        category: 'Tiling Works',
+        desc: 'Complete floor tiling installation using 600x600mm polished porcelain tiles on polymer-modified tile adhesive.',
+        spec: '2.78 pcs/sq.m nominal, 2mm spacer joint',
+        unit: 'sq.m',
+        calcMethod: 'per_sqm',
+        defaultQty: 1,
+        laborReq: '1 Tile Setter + 1 Helper per 10 sq.m/day',
+        instructions: 'Check floor levelness, butter tile backs and notched-trowel bed, align spacers and grout.',
+        notes: 'Standard 8% cutting wastage included.',
+        components: [
+          { code: 'TIL-6060', type: 'Material', basis: 'per_unit', rate: 2.78, wastage: 8, supplierName: 'Wilcon Depot', notes: '60x60 floor tiles' },
+          { code: 'TIL-ADH', type: 'Material', basis: 'per_unit', rate: 0.2, wastage: 5, supplierName: 'ABC Chemical', notes: '~5 sq.m per 25kg bag' },
+          { code: 'LBR-TIL', type: 'Labor', basis: 'per_unit', rate: 0.1, wastage: 0, notes: 'Tile setter 10 sq.m/day' },
+          { code: 'LBR-HLP', type: 'Labor', basis: 'per_unit', rate: 0.1, wastage: 0, notes: 'Helper support' },
+        ],
+      });
+
+      seedAssembly({
+        asmCode: 'SOW-PNT-001',
+        name: 'Interior Wall Painting (Skim Coat + 2-Coat Finish)',
+        category: 'Painting Works',
+        desc: 'Surface preparation with interior skim coat followed by sanding and two coats of semi-gloss acrylic finish.',
+        spec: 'VOC-compliant architectural latex paint system',
+        unit: 'sq.m',
+        calcMethod: 'per_sqm',
+        defaultQty: 1,
+        laborReq: '1 Painter + 1 Helper per 18 sq.m/day',
+        instructions: 'Clean masonry substrate, apply 2 passes skim coat, sand #120/#180, apply primer and 2 topcoats.',
+        notes: 'Covers standard 3.0m clear height interior walls.',
+        components: [
+          { code: 'PNT-SKM', type: 'Material', basis: 'per_unit', rate: 0.05, wastage: 5, supplierName: 'Davies Paints', notes: '20 sq.m per 20kg bag' },
+          { code: 'PNT-TOP', type: 'Material', basis: 'per_unit', rate: 0.08, wastage: 5, supplierName: 'Davies Paints', notes: '2 coats semi-gloss coverage' },
+          { code: 'LBR-PNT', type: 'Labor', basis: 'per_unit', rate: 0.055, wastage: 0 },
+          { code: 'LBR-HLP', type: 'Labor', basis: 'per_unit', rate: 0.055, wastage: 0 },
+        ],
+      });
+
+      seedAssembly({
+        asmCode: 'SOW-PLM-001',
+        name: 'Plumbing Fixtures Installation (Water Closet)',
+        category: 'Plumbing Works',
+        desc: 'Supply and installation of complete dual-flush ceramic water closet with angle valve and braided hose.',
+        spec: '3/6L dual flush rough-in 305mm',
+        unit: 'set/s',
+        calcMethod: 'per_pc',
+        defaultQty: 1,
+        laborReq: '1 Plumber per 2 sets/day',
+        instructions: 'Set wax ring gasket, bolt flange, connect supply line, silicone perimeter seal & leak test.',
+        notes: 'Per fixture set.',
+        components: [
+          { code: 'PLM-WC', type: 'Material', basis: 'per_unit', rate: 1, wastage: 0, supplierName: 'HCG Philippines' },
+          { code: 'LBR-PLM', type: 'Labor', basis: 'per_unit', rate: 0.5, wastage: 0 },
+        ],
+      });
+
+      seedAssembly({
+        asmCode: 'SOW-ELC-001',
+        name: 'Lighting Installation (LED Linear Fixture)',
+        category: 'Electrical Works',
+        desc: 'Installation and termination of 18W 6500K LED linear batten fixture.',
+        spec: '220V AC 60Hz, ceiling/surface mount',
+        unit: 'pcs',
+        calcMethod: 'per_pc',
+        defaultQty: 1,
+        laborReq: '1 Electrician per 8 fixtures/day',
+        instructions: 'Mount bracket, terminate junction box with wire nuts/tape, energize and test illumination.',
+        notes: 'Excludes main branch circuit home-run.',
+        components: [
+          { code: 'ELC-FLR', type: 'Material', basis: 'per_unit', rate: 1, wastage: 2, supplierName: 'Firefly Electric' },
+          { code: 'LBR-ELC', type: 'Labor', basis: 'per_unit', rate: 0.125, wastage: 0 },
+        ],
+      });
+    }
+  });
+}
+

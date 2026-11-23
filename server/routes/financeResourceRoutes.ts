@@ -13,6 +13,11 @@ import {
   requireModule,
   requirePermission,
 } from '../auth.ts';
+import {
+  getAttachmentsForEntity,
+  lockAttachments,
+  saveBase64Attachment,
+} from '../attachments.ts';
 import { getProjectEvmMetrics, getProjectFinancialSummary } from '../calculations.ts';
 import { db, transaction, UPLOADS_DIR } from '../db.ts';
 import { createNotification, emitSyncEvent } from '../realtime.ts';
@@ -137,20 +142,26 @@ function buildProjectFinancialPayload(projectId: number) {
     .prepare('SELECT * FROM budget_allocations WHERE project_id = ? ORDER BY category ASC')
     .all(projectId);
 
-  const expenses = db
+  const rawExpenses = db
     .prepare(
       `SELECT e.*, sub.full_name AS submitted_by_name, app.full_name AS approved_by_name,
+              rev.full_name AS reviewed_by_name, exapp.full_name AS exception_approved_by_name,
               pr.ref_number AS pr_ref, cr.ref_number AS cr_ref, cr.description AS cr_description,
+              cr.amount_requested AS cr_amount_requested,
               COALESCE(NULLIF(e.custodian_name, ''), cr.custodian_name, '') AS resolved_custodian_name
        FROM expenses e
        JOIN users sub ON sub.id = e.submitted_by
        LEFT JOIN users app ON app.id = e.approved_by
+       LEFT JOIN users rev ON rev.id = e.reviewed_by
+       LEFT JOIN users exapp ON exapp.id = e.exception_approved_by
        LEFT JOIN purchase_requests pr ON pr.id = e.pr_id
        LEFT JOIN cash_requests cr ON cr.id = e.cash_request_id
        WHERE e.project_id = ?
        ORDER BY e.expense_date DESC, e.id DESC`
     )
     .all(projectId) as any[];
+
+  const expenses = hydrateExpensesWithAttachments(rawExpenses);
 
   const rawCategoryBreakdown = db
     .prepare(
@@ -187,7 +198,7 @@ function buildProjectFinancialPayload(projectId: number) {
   const cashRequests = db
     .prepare(
       `SELECT cr.*,
-              COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.cash_request_id = cr.id AND e.status != 'rejected'), 0) AS liquidated_total,
+              COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.cash_request_id = cr.id AND e.status NOT IN ('rejected','cancelled','draft')), 0) AS liquidated_total,
               COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.cash_request_id = cr.id AND e.status = 'approved'), 0) AS approved_liquidated_total
        FROM cash_requests cr
        WHERE cr.project_id = ?
@@ -202,7 +213,7 @@ function buildProjectFinancialPayload(projectId: number) {
   }
   for (const ex of expenses) {
     const cname = String(ex.resolved_custodian_name || '').trim();
-    if (cname && ex.status !== 'rejected') custodianNames.add(cname);
+    if (cname && !['rejected', 'cancelled', 'draft'].includes(ex.status)) custodianNames.add(cname);
   }
 
   const custodianLedgers = Array.from(custodianNames)
@@ -236,7 +247,7 @@ function buildProjectFinancialPayload(projectId: number) {
         }
       }
       for (const ex of expenses) {
-        if (ex.status === 'rejected') continue;
+        if (['rejected', 'cancelled', 'draft'].includes(ex.status)) continue;
         const cname = String(ex.resolved_custodian_name || '').trim();
         if (cname === custodian) {
           events.push({
@@ -288,6 +299,65 @@ function buildProjectFinancialPayload(projectId: number) {
     custodianLedgers,
     projectNotes: projectRow?.financial_notes || '',
   };
+}
+
+function hydrateExpensesWithAttachments(expenses: any[]) {
+  if (expenses.length === 0) return [];
+  const ids = expenses.map((e) => e.id);
+  const attRows = db
+    .prepare(
+      `SELECT pa.*, u.full_name AS uploaded_by_name
+       FROM protected_attachments pa
+       LEFT JOIN users u ON u.id = pa.uploaded_by
+       WHERE pa.entity_id IN (${ids.map(() => '?').join(',')})
+         AND pa.entity_type IN ('expense_receipt', 'expense_support')
+       ORDER BY pa.id ASC`
+    )
+    .all(...ids) as any[];
+
+  return expenses.map((e) => {
+    const atts = attRows
+      .filter((a) => a.entity_id === e.id)
+      .map((a) => ({
+        id: a.id,
+        entity_type: a.entity_type,
+        entity_id: a.entity_id,
+        project_id: a.project_id ?? null,
+        category: a.category || '',
+        caption: a.caption || '',
+        file_name: a.file_name,
+        mime_type: a.mime_type,
+        file_size: a.file_size,
+        is_locked: Number(a.is_locked || 0),
+        is_amended: Number(a.is_amended || 0),
+        amendment_note: a.amendment_note || '',
+        uploaded_by: a.uploaded_by ?? null,
+        uploaded_by_name: a.uploaded_by_name || undefined,
+        created_at: a.created_at,
+        is_image: String(a.mime_type || '').startsWith('image/'),
+      }));
+    return {
+      ...e,
+      attachments: atts,
+      receipt_count: atts.filter((a) => a.entity_type === 'expense_receipt').length,
+      support_count: atts.filter((a) => a.entity_type === 'expense_support').length,
+    };
+  });
+}
+
+function getUsersWithModuleAction(projectId: number, moduleSlug: string, action: string, excludeUserId?: number): number[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT u.id
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       JOIN role_permissions rp ON rp.role_id = r.id AND rp.module_slug = ? AND rp.action = ?
+       LEFT JOIN project_assignments pa ON pa.user_id = u.id AND pa.project_id = ?
+       WHERE u.is_active = 1
+         AND (r.slug IN ('system_admin', 'executive', 'general_manager', 'finance_officer', 'procurement_officer') OR pa.project_id = ?)`
+    )
+    .all(moduleSlug, action, projectId, projectId) as Array<{ id: number }>;
+  return rows.map((r) => r.id).filter((id) => id !== excludeUserId);
 }
 
 // --- Financials: Budgets, Expenses, Financial Analysis, Payments & Cash Requests ---
@@ -538,6 +608,71 @@ router.put('/projects/:id/allocations', requireModule('financials'), requirePerm
   res.json({ ok: true });
 });
 
+// --- Financial Expenses & Cash Liquidation Workflow ---
+function saveExpenseAttachmentsFromPayload(
+  expenseId: number,
+  projectId: number,
+  userId: number,
+  b: any,
+  isAmendment = false
+): number[] {
+  const createdIds: number[] = [];
+  if (Array.isArray(b.receiptsBase64)) {
+    for (const item of b.receiptsBase64.slice(0, 10)) {
+      if (!item?.dataUrl) continue;
+      const saved = saveBase64Attachment({
+        dataUrl: item.dataUrl,
+        fileName: item.fileName || `receipt-${expenseId}.jpg`,
+        entityType: 'expense_receipt',
+        entityId: expenseId,
+        projectId,
+        category: item.category || 'Official Receipt',
+        caption: item.caption || '',
+        uploadedBy: userId,
+        isAmended: isAmendment,
+        amendmentNote: isAmendment ? String(b.amendmentNote || '') : '',
+      });
+      createdIds.push(saved.id);
+    }
+  }
+  if (Array.isArray(b.supportDocsBase64)) {
+    for (const item of b.supportDocsBase64.slice(0, 10)) {
+      if (!item?.dataUrl) continue;
+      const saved = saveBase64Attachment({
+        dataUrl: item.dataUrl,
+        fileName: item.fileName || `support-${expenseId}.jpg`,
+        entityType: 'expense_support',
+        entityId: expenseId,
+        projectId,
+        category: item.category || 'Supporting Proof',
+        caption: item.caption || '',
+        uploadedBy: userId,
+        isAmended: isAmendment,
+        amendmentNote: isAmendment ? String(b.amendmentNote || '') : '',
+      });
+      createdIds.push(saved.id);
+    }
+  }
+  return createdIds;
+}
+
+function assertExpenseSubmissionEvidence(expenseId: number, noReceiptException: boolean, exceptionReason: string) {
+  const receipts = getAttachmentsForEntity('expense_receipt', expenseId);
+  const supports = getAttachmentsForEntity('expense_support', expenseId);
+  if (receipts.length > 0) return { receipts, supports };
+  if (noReceiptException && exceptionReason.trim().length >= 5 && supports.length > 0) {
+    return { receipts, supports };
+  }
+  if (noReceiptException) {
+    throw new Error(
+      'No-Receipt Exception requires both a clear explanation why the receipt is unavailable AND at least one alternative supporting proof attachment.'
+    );
+  }
+  throw new Error(
+    'Every expense submitted for liquidation must include at least one receipt photograph (or use the controlled No-Receipt Exception workflow with alternative proof).'
+  );
+}
+
 router.post('/projects/:id/expenses', requireModule('financials'), requirePermission('financials', 'create'), (req: AuthenticatedRequest, res) => {
   const projectId = Number(req.params.id);
   if (!canAccessProject(req.user!, projectId)) {
@@ -546,23 +681,23 @@ router.post('/projects/:id/expenses', requireModule('financials'), requirePermis
   }
 
   const b = req.body || {};
-  if (!b.expenseDate || !b.category || !b.description || !b.amount || !b.supplierRecipient) {
-    res.status(400).json({ error: 'Date, category, description, amount, and supplier/recipient are required' });
+  if (!b.expenseDate || !b.category || !b.description || !b.amount || Number(b.amount) <= 0 || !b.supplierRecipient) {
+    res.status(400).json({ error: 'Date, category, description, positive amount, and supplier/payee are required' });
     return;
   }
 
   if (b.clientIdempotencyKey) {
     const existing = db
-      .prepare('SELECT id FROM expenses WHERE client_idempotency_key = ?')
-      .get(String(b.clientIdempotencyKey)) as { id: number } | undefined;
+      .prepare('SELECT id, ref_number, status FROM expenses WHERE client_idempotency_key = ?')
+      .get(String(b.clientIdempotencyKey)) as { id: number; ref_number: string; status: string } | undefined;
     if (existing) {
-      res.status(200).json({ id: existing.id, deduplicated: true });
+      res.status(200).json({ id: existing.id, refNumber: existing.ref_number, status: existing.status, deduplicated: true });
       return;
     }
   }
 
   let cashRequestId: number | null = b.cashRequestId ? Number(b.cashRequestId) : null;
-  let custodianName = String(b.custodianName || '').trim();
+  let custodianName = String(b.custodianName || b.employeeName || '').trim();
   if (cashRequestId) {
     const cr = db.prepare('SELECT id, custodian_name FROM cash_requests WHERE id = ? AND project_id = ?').get(cashRequestId, projectId) as
       | { id: number; custodian_name: string }
@@ -574,47 +709,464 @@ router.post('/projects/:id/expenses', requireModule('financials'), requirePermis
     }
   }
 
+  const saveAsDraft = Boolean(b.saveAsDraft);
+  const noReceiptException = Boolean(b.noReceiptException);
+  const exceptionReason = String(b.exceptionReason || '').trim();
+  const employeeName = String(b.employeeName || custodianName || req.user!.full_name).trim();
+  const initialStatus = saveAsDraft ? 'draft' : 'pending_review';
+  const exceptionStatus = noReceiptException ? 'pending' : 'none';
   const refNum = `EXP-${Date.now().toString().slice(-6)}`;
-  const info = db
-    .prepare(
-      `INSERT INTO expenses (
-        ref_number, project_id, expense_date, category, description, amount,
-        supplier_recipient, payment_method, task_id, pr_id, cash_request_id, custodian_name,
-        submitted_by, status, remarks, client_idempotency_key
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-    )
-    .run(
-      refNum,
-      projectId,
-      b.expenseDate,
-      b.category,
-      String(b.description).trim(),
-      Number(b.amount),
-      String(b.supplierRecipient).trim(),
-      b.paymentMethod || 'Bank Transfer',
-      b.taskId ? Number(b.taskId) : null,
-      b.prId ? Number(b.prId) : null,
-      cashRequestId,
-      custodianName,
-      req.user!.id,
-      b.remarks || '',
-      b.clientIdempotencyKey || null
-    );
 
-  emitSyncEvent({
-    eventType: 'expense:submitted',
-    module: 'financials',
-    projectId,
-    payload: { id: Number(info.lastInsertRowid), refNumber: refNum },
+  try {
+    const result = transaction(() => {
+      const info = db
+        .prepare(
+          `INSERT INTO expenses (
+            ref_number, project_id, expense_date, category, description, amount,
+            supplier_recipient, payment_method, task_id, pr_id, cash_request_id, custodian_name,
+            employee_name, submitted_by, submitted_at, no_receipt_exception, exception_reason,
+            exception_status, status, remarks, client_idempotency_key
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          refNum,
+          projectId,
+          b.expenseDate,
+          b.category,
+          String(b.description).trim(),
+          Number(b.amount),
+          String(b.supplierRecipient).trim(),
+          b.paymentMethod || 'Cash',
+          b.taskId ? Number(b.taskId) : null,
+          b.prId ? Number(b.prId) : null,
+          cashRequestId,
+          custodianName,
+          employeeName,
+          req.user!.id,
+          saveAsDraft ? null : new Date().toISOString(),
+          noReceiptException ? 1 : 0,
+          exceptionReason,
+          exceptionStatus,
+          initialStatus,
+          b.remarks || '',
+          b.clientIdempotencyKey || null
+        );
+
+      const expenseId = Number(info.lastInsertRowid);
+      const savedAttIds = saveExpenseAttachmentsFromPayload(expenseId, projectId, req.user!.id, b);
+
+      if (!saveAsDraft) {
+        assertExpenseSubmissionEvidence(expenseId, noReceiptException, exceptionReason);
+      }
+
+      db.prepare(
+        `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+         VALUES (?, ?, ?, '', ?, ?, ?)`
+      ).run(
+        expenseId,
+        req.user!.id,
+        saveAsDraft ? 'CREATED_DRAFT' : noReceiptException ? 'SUBMITTED_WITH_EXCEPTION' : 'SUBMITTED_LIQUIDATION',
+        initialStatus,
+        saveAsDraft ? 'Saved expense draft' : noReceiptException ? `Exception: ${exceptionReason}` : (b.remarks || 'Submitted with receipt evidence'),
+        JSON.stringify({ attachmentIds: savedAttIds, noReceiptException, amount: Number(b.amount) })
+      );
+
+      return { expenseId, savedAttIds };
+    });
+
+    logAudit({
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: saveAsDraft ? 'CREATE_EXPENSE_DRAFT' : 'SUBMIT_EXPENSE_LIQUIDATION',
+      module: 'financials',
+      recordType: 'expense',
+      recordRef: refNum,
+      newValue: { projectId, amount: Number(b.amount), status: initialStatus, noReceiptException, attachmentIds: result.savedAttIds },
+      ipAddress: req.ip || '',
+    });
+
+    if (!saveAsDraft) {
+      for (const uid of getUsersWithModuleAction(projectId, 'financials', 'approve', req.user!.id)) {
+        createNotification({
+          userId: uid,
+          projectId,
+          type: 'liquidation_submitted',
+          title: `Cash Liquidation Awaiting Review: ${refNum}`,
+          body: `${req.user!.full_name} submitted ${b.description} (${Number(b.amount).toLocaleString()}).`,
+          linkSection: 'financials',
+        });
+      }
+    }
+
+    emitSyncEvent({
+      eventType: saveAsDraft ? 'expense:draft_saved' : 'expense:submitted',
+      module: 'financials',
+      projectId,
+      payload: { id: result.expenseId, refNumber: refNum, status: initialStatus },
+    });
+
+    res.status(201).json({ id: result.expenseId, refNumber: refNum, status: initialStatus });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to record expense' });
+  }
+});
+
+router.put('/expenses/:id', requireModule('financials'), requirePermission('financials', 'create'), (req: AuthenticatedRequest, res) => {
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp) {
+    res.status(404).json({ error: 'Expense not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+  if (!['draft', 'for_correction', 'correction_needed'].includes(exp.status)) {
+    res.status(403).json({ error: 'Only draft or returned-for-correction expenses can be edited directly.' });
+    return;
+  }
+
+  const b = req.body || {};
+  const noReceiptException = b.noReceiptException !== undefined ? Boolean(b.noReceiptException) : Boolean(exp.no_receipt_exception);
+  const exceptionReason = b.exceptionReason !== undefined ? String(b.exceptionReason).trim() : exp.exception_reason;
+
+  try {
+    transaction(() => {
+      db.prepare(
+        `UPDATE expenses SET
+          expense_date = COALESCE(?, expense_date),
+          category = COALESCE(?, category),
+          description = COALESCE(?, description),
+          amount = COALESCE(?, amount),
+          supplier_recipient = COALESCE(?, supplier_recipient),
+          payment_method = COALESCE(?, payment_method),
+          cash_request_id = ?,
+          custodian_name = COALESCE(?, custodian_name),
+          employee_name = COALESCE(?, employee_name),
+          no_receipt_exception = ?,
+          exception_reason = ?,
+          exception_status = CASE WHEN ? = 1 THEN (CASE WHEN exception_status = 'approved' THEN 'approved' ELSE 'pending' END) ELSE 'none' END,
+          remarks = COALESCE(?, remarks)
+         WHERE id = ?`
+      ).run(
+        b.expenseDate ?? null,
+        b.category ?? null,
+        b.description ? String(b.description).trim() : null,
+        b.amount !== undefined ? Number(b.amount) : null,
+        b.supplierRecipient ? String(b.supplierRecipient).trim() : null,
+        b.paymentMethod ?? null,
+        b.cashRequestId !== undefined ? (b.cashRequestId ? Number(b.cashRequestId) : null) : exp.cash_request_id,
+        b.custodianName ?? null,
+        b.employeeName ?? null,
+        noReceiptException ? 1 : 0,
+        exceptionReason,
+        noReceiptException ? 1 : 0,
+        b.remarks ?? null,
+        expenseId
+      );
+
+      const savedAttIds = saveExpenseAttachmentsFromPayload(expenseId, exp.project_id, req.user!.id, b);
+
+      db.prepare(
+        `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+         VALUES (?, ?, 'UPDATED_EXPENSE', ?, ?, ?, ?)`
+      ).run(expenseId, req.user!.id, exp.status, exp.status, String(b.remarks || 'Updated expense entry'), JSON.stringify({ attachmentIds: savedAttIds }));
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to update expense' });
+  }
+});
+
+router.post('/expenses/:id/submit', requireModule('financials'), requirePermission('financials', 'create'), (req: AuthenticatedRequest, res) => {
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp) {
+    res.status(404).json({ error: 'Expense not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+  if (!['draft', 'for_correction', 'correction_needed', 'rejected'].includes(exp.status)) {
+    res.status(400).json({ error: `Cannot submit expense in status "${exp.status}"` });
+    return;
+  }
+
+  const b = req.body || {};
+  const noReceiptException = b.noReceiptException !== undefined ? Boolean(b.noReceiptException) : Boolean(exp.no_receipt_exception);
+  const exceptionReason = b.exceptionReason !== undefined ? String(b.exceptionReason).trim() : String(exp.exception_reason || '');
+  const isResubmit = ['for_correction', 'correction_needed', 'rejected'].includes(exp.status);
+  const nextStatus = isResubmit ? 'resubmitted' : 'pending_review';
+
+  try {
+    transaction(() => {
+      const savedAttIds = saveExpenseAttachmentsFromPayload(expenseId, exp.project_id, req.user!.id, b);
+      assertExpenseSubmissionEvidence(expenseId, noReceiptException, exceptionReason);
+
+      db.prepare(
+        `UPDATE expenses SET
+          status = ?,
+          submitted_at = COALESCE(submitted_at, datetime('now')),
+          no_receipt_exception = ?,
+          exception_reason = ?,
+          exception_status = CASE WHEN ? = 1 THEN (CASE WHEN exception_status = 'approved' THEN 'approved' ELSE 'pending' END) ELSE 'none' END,
+          remarks = COALESCE(?, remarks)
+         WHERE id = ?`
+      ).run(nextStatus, noReceiptException ? 1 : 0, exceptionReason, noReceiptException ? 1 : 0, b.remarks ?? null, expenseId);
+
+      db.prepare(
+        `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        expenseId,
+        req.user!.id,
+        isResubmit ? 'RESUBMITTED_LIQUIDATION' : 'SUBMITTED_LIQUIDATION',
+        exp.status,
+        nextStatus,
+        String(b.remarks || (isResubmit ? 'Resubmitted after correction' : 'Submitted for review')),
+        JSON.stringify({ attachmentIds: savedAttIds, noReceiptException })
+      );
+    });
+
+    for (const uid of getUsersWithModuleAction(exp.project_id, 'financials', 'approve', req.user!.id)) {
+      createNotification({
+        userId: uid,
+        projectId: exp.project_id,
+        type: 'liquidation_submitted',
+        title: `${exp.ref_number} ${isResubmit ? 'Resubmitted' : 'Awaiting Review'}`,
+        body: `${req.user!.full_name} submitted ${exp.description} (${Number(exp.amount).toLocaleString()}).`,
+        linkSection: 'financials',
+      });
+    }
+
+    emitSyncEvent({ eventType: 'expense:submitted', module: 'financials', projectId: exp.project_id, payload: { id: expenseId, status: nextStatus } });
+    res.json({ ok: true, status: nextStatus });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Submission validation failed' });
+  }
+});
+
+router.post('/expenses/:id/cancel', requireModule('financials'), requirePermission('financials', 'create'), (req: AuthenticatedRequest, res) => {
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp || !canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  if (exp.status === 'approved') {
+    res.status(403).json({ error: 'Approved expenses cannot be cancelled. Use an authorized reversal amendment.' });
+    return;
+  }
+  transaction(() => {
+    db.prepare("UPDATE expenses SET status = 'cancelled' WHERE id = ?").run(expenseId);
+    db.prepare(
+      `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+       VALUES (?, ?, 'CANCELLED_EXPENSE', ?, 'cancelled', ?, '{}')`
+    ).run(expenseId, req.user!.id, exp.status, String(req.body?.remarks || 'Cancelled by user'));
+  });
+  res.json({ ok: true, status: 'cancelled' });
+});
+
+// Dedicated Supervisor Cash Liquidation Review Queue
+router.get('/liquidations/review-queue', requireModule('financials'), requirePermission('financials', 'view'), (req: AuthenticatedRequest, res) => {
+  const access = getAccessibleProjectIds(req.user!);
+  const projectId = req.query.projectId ? Number(req.query.projectId) : null;
+  const statusFilter = typeof req.query.status === 'string' ? req.query.status : '';
+  const exceptionOnly = req.query.exceptionOnly === '1' || req.query.exceptionOnly === 'true';
+
+  let where = 'WHERE 1=1';
+  const params: unknown[] = [];
+
+  if (projectId) {
+    if (!canAccessProject(req.user!, projectId)) {
+      res.status(403).json({ error: 'Project access denied' });
+      return;
+    }
+    where += ' AND e.project_id = ?';
+    params.push(projectId);
+  } else if (access !== 'ALL') {
+    if (access.length === 0) {
+      res.json({ queue: [], summary: { pendingCount: 0, exceptionPendingCount: 0, forCorrectionCount: 0, approvedCount: 0 } });
+      return;
+    }
+    where += ` AND e.project_id IN (${access.map(() => '?').join(',')})`;
+    params.push(...access);
+  }
+
+  if (statusFilter && statusFilter !== 'all') {
+    if (statusFilter === 'awaiting_review') {
+      where += " AND e.status IN ('pending', 'submitted', 'pending_review', 'resubmitted')";
+    } else {
+      where += ' AND e.status = ?';
+      params.push(statusFilter);
+    }
+  }
+  if (exceptionOnly) {
+    where += ' AND e.no_receipt_exception = 1';
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT e.*, p.name AS project_name, p.ref_number AS project_ref,
+              sub.full_name AS submitted_by_name, app.full_name AS approved_by_name,
+              rev.full_name AS reviewed_by_name, exapp.full_name AS exception_approved_by_name,
+              cr.ref_number AS cr_ref, cr.description AS cr_description,
+              cr.amount_requested AS cr_amount_requested,
+              COALESCE(NULLIF(e.custodian_name, ''), cr.custodian_name, '') AS resolved_custodian_name
+       FROM expenses e
+       JOIN projects p ON p.id = e.project_id
+       JOIN users sub ON sub.id = e.submitted_by
+       LEFT JOIN users app ON app.id = e.approved_by
+       LEFT JOIN users rev ON rev.id = e.reviewed_by
+       LEFT JOIN users exapp ON exapp.id = e.exception_approved_by
+       LEFT JOIN cash_requests cr ON cr.id = e.cash_request_id
+       ${where}
+       ORDER BY CASE WHEN e.status IN ('pending', 'submitted', 'pending_review', 'resubmitted') THEN 0 ELSE 1 END, e.id DESC
+       LIMIT 250`
+    )
+    .all(...params) as any[];
+
+  const hydrated = hydrateExpensesWithAttachments(rows);
+  const expIds = hydrated.map((e) => e.id);
+  const historyRows =
+    expIds.length > 0
+      ? (db
+          .prepare(
+            `SELECT eh.*, u.full_name AS actor_name, r.name AS actor_role
+             FROM expense_history eh
+             LEFT JOIN users u ON u.id = eh.actor_id
+             LEFT JOIN roles r ON r.id = u.role_id
+             WHERE eh.expense_id IN (${expIds.map(() => '?').join(',')})
+             ORDER BY eh.id DESC`
+          )
+          .all(...expIds) as any[])
+      : [];
+
+  const queue = hydrated.map((e) => ({
+    ...e,
+    history: historyRows.filter((h) => h.expense_id === e.id),
+  }));
+
+  res.json({
+    queue,
+    summary: {
+      pendingCount: queue.filter((q) => ['pending', 'submitted', 'pending_review', 'resubmitted'].includes(q.status)).length,
+      exceptionPendingCount: queue.filter((q) => q.no_receipt_exception === 1 && q.exception_status === 'pending').length,
+      forCorrectionCount: queue.filter((q) => ['for_correction', 'correction_needed'].includes(q.status)).length,
+      approvedCount: queue.filter((q) => q.status === 'approved').length,
+    },
+  });
+});
+
+router.get('/expenses/:id/history', requireModule('financials'), requirePermission('financials', 'view'), (req: AuthenticatedRequest, res) => {
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp || !canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  const history = db
+    .prepare(
+      `SELECT eh.*, u.full_name AS actor_name, r.name AS actor_role
+       FROM expense_history eh
+       LEFT JOIN users u ON u.id = eh.actor_id
+       LEFT JOIN roles r ON r.id = u.role_id
+       WHERE eh.expense_id = ?
+       ORDER BY eh.id DESC`
+    )
+    .all(expenseId);
+  const [hydrated] = hydrateExpensesWithAttachments([exp]);
+  res.json({ expense: hydrated, history });
+});
+
+router.patch('/expenses/:id/exception-decision', requireModule('financials'), (req: AuthenticatedRequest, res) => {
+  if (!hasPermission(req.user!, 'financials', 'approve_exception') && !hasPermission(req.user!, 'financials', 'approve')) {
+    res.status(403).json({ error: 'Supervisor/management exception authorization required' });
+    return;
+  }
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp) {
+    res.status(404).json({ error: 'Expense not found' });
+    return;
+  }
+  if (!canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Project access denied' });
+    return;
+  }
+  if (exp.no_receipt_exception !== 1) {
+    res.status(400).json({ error: 'This expense does not have a no-receipt exception request.' });
+    return;
+  }
+
+  const { decision, remarks, overrideSelfApproval } = req.body || {};
+  if (!['approved', 'rejected'].includes(decision)) {
+    res.status(400).json({ error: 'Decision must be approved or rejected' });
+    return;
+  }
+  if (decision === 'rejected' && !String(remarks || '').trim()) {
+    res.status(400).json({ error: 'Remarks are required when rejecting a no-receipt exception' });
+    return;
+  }
+
+  if (exp.submitted_by === req.user!.id) {
+    const setting = db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'allow_self_liquidation_approval'").get() as
+      | { setting_value: string }
+      | undefined;
+    const isMgmtOverride = Boolean(overrideSelfApproval && ['system_admin', 'executive', 'general_manager'].includes(req.user!.role_slug));
+    if (setting?.setting_value !== '1' && !isMgmtOverride) {
+      res.status(403).json({ error: 'Self-approval of your own no-receipt exception is not permitted.' });
+      return;
+    }
+  }
+
+  transaction(() => {
+    db.prepare(
+      `UPDATE expenses SET
+        exception_status = ?,
+        exception_approved_by = ?,
+        exception_approved_at = datetime('now'),
+        exception_remarks = ?
+       WHERE id = ?`
+    ).run(decision, req.user!.id, String(remarks || '').trim(), expenseId);
+
+    db.prepare(
+      `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      expenseId,
+      req.user!.id,
+      decision === 'approved' ? 'EXCEPTION_APPROVED' : 'EXCEPTION_REJECTED',
+      exp.status,
+      exp.status,
+      String(remarks || '').trim() || `No-receipt exception ${decision}`,
+      JSON.stringify({ exceptionStatus: decision })
+    );
   });
 
-  res.status(201).json({ id: Number(info.lastInsertRowid), refNumber: refNum });
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: `EXPENSE_EXCEPTION_${decision.toUpperCase()}`,
+    module: 'financials',
+    recordType: 'expense',
+    recordRef: exp.ref_number,
+    newValue: { exceptionStatus: decision, reason: exp.exception_reason },
+    remarks: String(remarks || ''),
+    ipAddress: req.ip || '',
+  });
+
+  res.json({ ok: true, exceptionStatus: decision });
 });
 
 router.patch('/expenses/:id/decision', requireModule('financials'), requirePermission('financials', 'approve'), (req: AuthenticatedRequest, res) => {
   const expenseId = Number(req.params.id);
-  const { decision, remarks } = req.body || {};
-  if (!['approved', 'rejected', 'correction_needed'].includes(decision)) {
+  const { decision, remarks, reason, approveException, overrideSelfApproval, overrideReason } = req.body || {};
+  const normalizedDecision = decision === 'correction_needed' ? 'for_correction' : decision;
+  if (!['approved', 'rejected', 'for_correction'].includes(normalizedDecision)) {
     res.status(400).json({ error: 'Invalid expense decision' });
     return;
   }
@@ -629,16 +1181,91 @@ router.patch('/expenses/:id/decision', requireModule('financials'), requirePermi
     return;
   }
 
+  const decisionNote = String(reason || remarks || '').trim();
+  if ((normalizedDecision === 'rejected' || normalizedDecision === 'for_correction') && !decisionNote) {
+    res.status(400).json({ error: 'A clear reason is required when rejecting or returning an expense for correction.' });
+    return;
+  }
+
+  // Self-approval guard
+  let usedSelfOverride = false;
+  if (exp.submitted_by === req.user!.id && normalizedDecision === 'approved') {
+    const setting = db.prepare("SELECT setting_value FROM system_settings WHERE setting_key = 'allow_self_liquidation_approval'").get() as
+      | { setting_value: string }
+      | undefined;
+    const isAuthorizedMgmt = ['system_admin', 'executive', 'general_manager'].includes(req.user!.role_slug);
+    if (setting?.setting_value !== '1' && !(overrideSelfApproval && isAuthorizedMgmt)) {
+      res.status(403).json({
+        error: 'Users cannot approve their own cash liquidation unless explicitly authorized with a logged management override.',
+        selfApprovalBlocked: true,
+      });
+      return;
+    }
+    usedSelfOverride = true;
+  }
+
+  if (normalizedDecision === 'approved') {
+    const receipts = getAttachmentsForEntity('expense_receipt', expenseId);
+    const supports = getAttachmentsForEntity('expense_support', expenseId);
+
+    if (receipts.length === 0) {
+      if (exp.no_receipt_exception !== 1 || supports.length === 0) {
+        res.status(400).json({
+          error: 'Cannot approve expense: missing receipt photograph or approved no-receipt exception supporting proof.',
+        });
+        return;
+      }
+      if (exp.exception_status !== 'approved' && !approveException) {
+        res.status(400).json({
+          error: 'No-Receipt Exception must be separately authorized before approving this expense.',
+          requiresExceptionAuthorization: true,
+        });
+        return;
+      }
+      if (approveException && !hasPermission(req.user!, 'financials', 'approve_exception') && !hasPermission(req.user!, 'financials', 'approve')) {
+        res.status(403).json({ error: 'No-Receipt Exception authorization permission required.' });
+        return;
+      }
+    }
+  }
+
   transaction(() => {
-    db.prepare('UPDATE expenses SET status = ?, approved_by = ?, remarks = COALESCE(?, remarks) WHERE id = ?').run(
-      decision,
+    const shouldAlsoApproveException = normalizedDecision === 'approved' && exp.no_receipt_exception === 1 && exp.exception_status !== 'approved' && approveException;
+    db.prepare(
+      `UPDATE expenses SET
+        status = ?,
+        approved_by = CASE WHEN ? = 'approved' THEN ? ELSE approved_by END,
+        approved_at = CASE WHEN ? = 'approved' THEN datetime('now') ELSE approved_at END,
+        reviewed_by = ?,
+        reviewed_at = datetime('now'),
+        rejection_reason = CASE WHEN ? IN ('rejected', 'for_correction') THEN ? ELSE rejection_reason END,
+        exception_status = CASE WHEN ? = 1 THEN 'approved' ELSE exception_status END,
+        exception_approved_by = CASE WHEN ? = 1 THEN ? ELSE exception_approved_by END,
+        exception_approved_at = CASE WHEN ? = 1 THEN datetime('now') ELSE exception_approved_at END,
+        remarks = COALESCE(NULLIF(?, ''), remarks)
+       WHERE id = ?`
+    ).run(
+      normalizedDecision,
+      normalizedDecision,
       req.user!.id,
-      remarks ?? null,
+      normalizedDecision,
+      req.user!.id,
+      normalizedDecision,
+      decisionNote,
+      shouldAlsoApproveException ? 1 : 0,
+      shouldAlsoApproveException ? 1 : 0,
+      req.user!.id,
+      shouldAlsoApproveException ? 1 : 0,
+      decisionNote,
       expenseId
     );
 
+    if (normalizedDecision === 'approved') {
+      lockAttachments(['expense_receipt', 'expense_support'], expenseId);
+    }
+
     // Avoid double-counting: settle corresponding PR commitment when linked expense is approved
-    if (decision === 'approved' && exp.status !== 'approved' && exp.pr_id) {
+    if (normalizedDecision === 'approved' && exp.status !== 'approved' && exp.pr_id) {
       db.prepare(
         `UPDATE purchase_requests
          SET settled_amount = MIN(commitment_amount, settled_amount + ?),
@@ -646,17 +1273,42 @@ router.patch('/expenses/:id/decision', requireModule('financials'), requirePermi
          WHERE id = ?`
       ).run(Number(exp.amount), exp.pr_id);
     }
+
+    db.prepare(
+      `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      expenseId,
+      req.user!.id,
+      `LIQUIDATION_${normalizedDecision.toUpperCase()}`,
+      exp.status,
+      normalizedDecision,
+      decisionNote || `Marked ${normalizedDecision}`,
+      JSON.stringify({ usedSelfOverride, overrideReason: overrideReason || '', exceptionAutoApproved: Boolean(shouldAlsoApproveException) })
+    );
   });
+
+  if (exp.submitted_by !== req.user!.id) {
+    createNotification({
+      userId: exp.submitted_by,
+      projectId: exp.project_id,
+      type: 'liquidation_decision',
+      title: `Liquidation ${exp.ref_number}: ${normalizedDecision.replace(/_/g, ' ')}`,
+      body: decisionNote || `${exp.description} was marked ${normalizedDecision.replace(/_/g, ' ')}.`,
+      linkSection: 'financials',
+    });
+  }
 
   logAudit({
     userId: req.user!.id,
     userEmail: req.user!.email,
-    action: `EXPENSE_${decision.toUpperCase()}`,
+    action: `EXPENSE_${normalizedDecision.toUpperCase()}`,
     module: 'financials',
     recordType: 'expense',
     recordRef: exp.ref_number,
     previousValue: { status: exp.status },
-    newValue: { status: decision, amount: exp.amount, pr_id: exp.pr_id },
+    newValue: { status: normalizedDecision, amount: exp.amount, pr_id: exp.pr_id, usedSelfOverride },
+    remarks: decisionNote || String(overrideReason || ''),
     ipAddress: req.ip || '',
   });
 
@@ -664,13 +1316,193 @@ router.patch('/expenses/:id/decision', requireModule('financials'), requirePermi
     eventType: 'expense:decided',
     module: 'financials',
     projectId: exp.project_id,
-    payload: { id: expenseId, status: decision },
+    payload: { id: expenseId, status: normalizedDecision },
   });
 
-  res.json({ ok: true, status: decision });
+  res.json({ ok: true, status: normalizedDecision });
 });
 
-// --- Purchase Requests & Procurement ---
+router.post('/expenses/:id/amend', requireModule('financials'), (req: AuthenticatedRequest, res) => {
+  if (!hasPermission(req.user!, 'financials', 'amend_approved') && !hasPermission(req.user!, 'financials', 'approve')) {
+    res.status(403).json({ error: 'Authorized financial amendment permission required' });
+    return;
+  }
+  const expenseId = Number(req.params.id);
+  const exp = db.prepare('SELECT * FROM expenses WHERE id = ?').get(expenseId) as any;
+  if (!exp || !canAccessProject(req.user!, exp.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  if (exp.status !== 'approved') {
+    res.status(400).json({ error: 'Amendments/reversals only apply to approved financial records.' });
+    return;
+  }
+
+  const { amendmentType, amendmentNote, reversalAmount, receiptsBase64, supportDocsBase64 } = req.body || {};
+  const note = String(amendmentNote || '').trim();
+  if (!note) {
+    res.status(400).json({ error: 'Amendment reason/note is required' });
+    return;
+  }
+
+  const result = transaction(() => {
+    const addedAttIds = saveExpenseAttachmentsFromPayload(expenseId, exp.project_id, req.user!.id, {
+      amendmentNote: note,
+      receiptsBase64,
+      supportDocsBase64,
+    }, true);
+    if (addedAttIds.length > 0) {
+      db.prepare(`UPDATE protected_attachments SET is_locked = 1 WHERE id IN (${addedAttIds.map(() => '?').join(',')})`).run(...addedAttIds);
+    }
+
+    let reversalId: number | null = null;
+    if (amendmentType === 'reversal') {
+      const revAmt = -Math.abs(Number(reversalAmount || exp.amount));
+      const revRef = `EXP-REV-${Date.now().toString().slice(-6)}`;
+      const rInfo = db
+        .prepare(
+          `INSERT INTO expenses (
+            ref_number, project_id, expense_date, category, description, amount,
+            supplier_recipient, payment_method, cash_request_id, custodian_name,
+            employee_name, submitted_by, approved_by, approved_at, status, remarks, is_system_settlement
+          ) VALUES (?, ?, date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'approved', ?, 1)`
+        )
+        .run(
+          revRef,
+          exp.project_id,
+          exp.category,
+          `Reversal of ${exp.ref_number}: ${exp.description}`,
+          revAmt,
+          exp.supplier_recipient,
+          exp.payment_method,
+          exp.cash_request_id,
+          exp.custodian_name,
+          exp.employee_name,
+          req.user!.id,
+          req.user!.id,
+          `Authorized Reversal: ${note}`
+        );
+      reversalId = Number(rInfo.lastInsertRowid);
+    }
+
+    db.prepare('UPDATE expenses SET amendment_count = amendment_count + 1 WHERE id = ?').run(expenseId);
+    db.prepare(
+      `INSERT INTO expense_history (expense_id, actor_id, action, previous_status, new_status, remarks, metadata_json)
+       VALUES (?, ?, ?, 'approved', 'approved', ?, ?)`
+    ).run(
+      expenseId,
+      req.user!.id,
+      amendmentType === 'reversal' ? 'AUTHORIZED_REVERSAL' : 'AUTHORIZED_AMENDMENT',
+      note,
+      JSON.stringify({ addedAttIds, reversalId })
+    );
+
+    return { addedAttIds, reversalId };
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: amendmentType === 'reversal' ? 'REVERSE_APPROVED_EXPENSE' : 'AMEND_APPROVED_EXPENSE',
+    module: 'financials',
+    recordType: 'expense',
+    recordRef: exp.ref_number,
+    newValue: result,
+    remarks: note,
+    ipAddress: req.ip || '',
+  });
+
+  emitSyncEvent({ eventType: 'expense:amended', module: 'financials', projectId: exp.project_id, payload: { id: expenseId } });
+  res.json({ ok: true, ...result });
+});
+
+// --- Multi-Item Purchase Requests, Procurement & Receiving Traceability ---
+function hydratePurchaseRequests(prs: any[]) {
+  if (prs.length === 0) return { prs: [], pos: [] };
+  const prIds = prs.map((p) => p.id);
+  const ph = prIds.map(() => '?').join(',');
+
+  const approvals = db
+    .prepare(
+      `SELECT pra.*, u.full_name AS approver_name
+       FROM purchase_request_approvals pra
+       JOIN users u ON u.id = pra.approver_id
+       WHERE pra.pr_id IN (${ph})
+       ORDER BY pra.id ASC`
+    )
+    .all(...prIds) as any[];
+
+  const items = db
+    .prepare(
+      `SELECT pri.*, s.name AS supplier_master_name, inv.sku AS inventory_sku, inv.current_qty AS warehouse_qty
+       FROM purchase_request_items pri
+       LEFT JOIN suppliers s ON s.id = pri.preferred_supplier_id
+       LEFT JOIN inventory_items inv ON inv.id = pri.inventory_item_id
+       WHERE pri.pr_id IN (${ph})
+       ORDER BY pri.sort_order ASC, pri.id ASC`
+    )
+    .all(...prIds) as any[];
+
+  const attRows = db
+    .prepare(
+      `SELECT pa.*, u.full_name AS uploaded_by_name
+       FROM protected_attachments pa
+       LEFT JOIN users u ON u.id = pa.uploaded_by
+       WHERE pa.entity_id IN (${ph})
+         AND pa.entity_type IN ('pr_attachment', 'pr_item_doc', 'po_receiving')
+       ORDER BY pa.id ASC`
+    )
+    .all(...prIds) as any[];
+
+  const pos = db
+    .prepare(
+      `SELECT po.*, u.full_name AS received_by_name
+       FROM purchase_orders po
+       LEFT JOIN users u ON u.id = po.receiving_confirmed_by
+       WHERE po.pr_id IN (${ph})
+       ORDER BY po.id DESC`
+    )
+    .all(...prIds) as any[];
+
+  const poItems = db
+    .prepare(
+      `SELECT poi.*, inv.sku AS inventory_sku
+       FROM purchase_order_items poi
+       LEFT JOIN inventory_items inv ON inv.id = poi.inventory_item_id
+       WHERE poi.pr_id IN (${ph})
+       ORDER BY poi.id ASC`
+    )
+    .all(...prIds) as any[];
+
+  const poReceipts = db
+    .prepare(
+      `SELECT por.*, u.full_name AS received_by_name, inv.name AS warehouse_item_name, inv.sku AS warehouse_sku
+       FROM purchase_order_receipts por
+       JOIN users u ON u.id = por.received_by
+       LEFT JOIN inventory_items inv ON inv.id = por.inventory_item_id
+       WHERE por.pr_id IN (${ph})
+       ORDER BY por.id DESC`
+    )
+    .all(...prIds) as any[];
+
+  const hydratedPos = pos.map((po) => ({
+    ...po,
+    items: poItems.filter((i) => i.po_id === po.id),
+    receipts: poReceipts.filter((r) => r.po_id === po.id),
+  }));
+
+  const hydratedPrs = prs.map((pr) => ({
+    ...pr,
+    approvals: approvals.filter((a) => a.pr_id === pr.id),
+    items: items.filter((i) => i.pr_id === pr.id),
+    attachments: attRows.filter((a) => a.entity_id === pr.id),
+    purchaseOrders: hydratedPos.filter((po) => po.pr_id === pr.id),
+    receipts: poReceipts.filter((r) => r.pr_id === pr.id),
+  }));
+
+  return { prs: hydratedPrs, pos: hydratedPos };
+}
+
 router.get('/purchase-requests', requireModule('procurement'), requirePermission('procurement', 'view'), (req: AuthenticatedRequest, res) => {
   const access = getAccessibleProjectIds(req.user!);
   const projectId = req.query.projectId ? Number(req.query.projectId) : null;
@@ -695,7 +1527,8 @@ router.get('/purchase-requests', requireModule('procurement'), requirePermission
 
   const prs = db
     .prepare(
-      `SELECT pr.*, p.name AS project_name, p.ref_number AS project_ref, u.full_name AS requested_by_name
+      `SELECT pr.*, p.name AS project_name, p.ref_number AS project_ref, p.location AS project_location,
+              u.full_name AS requested_by_name
        FROM purchase_requests pr
        JOIN projects p ON p.id = pr.project_id
        JOIN users u ON u.id = pr.requested_by
@@ -704,24 +1537,8 @@ router.get('/purchase-requests', requireModule('procurement'), requirePermission
     )
     .all(...params) as any[];
 
-  const approvals = db
-    .prepare(
-      `SELECT pra.*, u.full_name AS approver_name
-       FROM purchase_request_approvals pra
-       JOIN users u ON u.id = pra.approver_id
-       ORDER BY pra.id ASC`
-    )
-    .all() as any[];
-
-  const pos = db.prepare('SELECT * FROM purchase_orders ORDER BY id DESC').all();
-
-  res.json({
-    purchaseRequests: prs.map((pr) => ({
-      ...pr,
-      approvals: approvals.filter((a) => a.pr_id === pr.id),
-    })),
-    purchaseOrders: pos,
-  });
+  const { prs: hydratedPrs, pos: hydratedPos } = hydratePurchaseRequests(prs);
+  res.json({ purchaseRequests: hydratedPrs, purchaseOrders: hydratedPos });
 });
 
 router.post('/projects/:id/purchase-requests', requireModule('procurement'), requirePermission('procurement', 'create'), (req: AuthenticatedRequest, res) => {
@@ -731,57 +1548,337 @@ router.post('/projects/:id/purchase-requests', requireModule('procurement'), req
     return;
   }
 
-  const b = req.body || {};
-  if (!b.itemDescription || !b.quantity || !b.requiredDate) {
-    res.status(400).json({ error: 'Item description, quantity, and required date are required' });
+  const projectRow = db.prepare('SELECT location FROM projects WHERE id = ?').get(projectId) as { location: string } | undefined;
+  if (!projectRow) {
+    res.status(404).json({ error: 'Project not found' });
     return;
   }
 
-  const qty = Number(b.quantity);
-  const unitCost = Number(b.estimatedUnitCost || 0);
-  const totalCost = Number((qty * unitCost).toFixed(2));
+  const b = req.body || {};
+  if (!b.requiredDate) {
+    res.status(400).json({ error: 'Required delivery date is required' });
+    return;
+  }
+
+  // Normalize multi-item or legacy single-item payload
+  const rawItems: any[] = Array.isArray(b.items) && b.items.length > 0
+    ? b.items
+    : b.itemDescription
+    ? [
+        {
+          itemCode: b.itemCode || '',
+          itemDescription: b.itemDescription,
+          specifications: b.specifications || '',
+          category: b.category || 'Materials',
+          requestedQty: b.quantity,
+          unit: b.unit || 'pcs',
+          estimatedUnitPrice: b.estimatedUnitCost || 0,
+          preferredSupplierId: b.preferredSupplierId || null,
+          preferredSupplierName: b.suggestedSupplier || b.preferredSupplierName || '',
+          remarks: b.remarks || '',
+          catalogItemId: b.catalogItemId || null,
+          inventoryItemId: b.inventoryItemId || null,
+        },
+      ]
+    : [];
+
+  if (rawItems.length === 0) {
+    res.status(400).json({ error: 'At least one purchase request line item is required' });
+    return;
+  }
+
+  const normalizedItems: Array<{
+    catalogItemId: number | null;
+    inventoryItemId: number | null;
+    itemCode: string;
+    itemDescription: string;
+    specifications: string;
+    category: string;
+    requestedQty: number;
+    unit: string;
+    estimatedUnitPrice: number;
+    estimatedTotal: number;
+    preferredSupplierId: number | null;
+    preferredSupplierName: string;
+    remarks: string;
+    sortOrder: number;
+  }> = [];
+  let grandEstimatedTotal = 0;
+  for (let i = 0; i < rawItems.length; i++) {
+    const it = rawItems[i];
+    const desc = String(it.itemDescription || '').trim();
+    const reqQty = Number(it.requestedQty ?? it.quantity ?? 0);
+    const estUnitPrice = Number(it.estimatedUnitPrice ?? it.estimatedUnitCost ?? 0);
+    if (!desc) {
+      res.status(400).json({ error: `Line item ${i + 1}: Item description is required` });
+      return;
+    }
+    if (!Number.isFinite(reqQty) || reqQty <= 0) {
+      res.status(400).json({ error: `Line item ${i + 1} (${desc}): Quantity must be greater than zero` });
+      return;
+    }
+    if (!Number.isFinite(estUnitPrice) || estUnitPrice < 0) {
+      res.status(400).json({ error: `Line item ${i + 1} (${desc}): Estimated unit price cannot be negative` });
+      return;
+    }
+    const lineTotal = Number((reqQty * estUnitPrice).toFixed(2));
+    grandEstimatedTotal += lineTotal;
+    normalizedItems.push({
+      catalogItemId: it.catalogItemId ? Number(it.catalogItemId) : null,
+      inventoryItemId: it.inventoryItemId ? Number(it.inventoryItemId) : null,
+      itemCode: String(it.itemCode || '').trim(),
+      itemDescription: desc,
+      specifications: String(it.specifications || '').trim(),
+      category: String(it.category || b.category || 'Materials').trim(),
+      requestedQty: reqQty,
+      unit: String(it.unit || 'pcs').trim() || 'pcs',
+      estimatedUnitPrice: estUnitPrice,
+      estimatedTotal: lineTotal,
+      preferredSupplierId: it.preferredSupplierId ? Number(it.preferredSupplierId) : null,
+      preferredSupplierName: String(it.preferredSupplierName || b.preferredSupplierName || b.suggestedSupplier || '').trim(),
+      remarks: String(it.remarks || '').trim(),
+      sortOrder: i + 1,
+    });
+  }
+  grandEstimatedTotal = Number(grandEstimatedTotal.toFixed(2));
+
+  const headerSummaryDesc =
+    normalizedItems.length === 1
+      ? normalizedItems[0].itemDescription
+      : `${normalizedItems[0].itemDescription} (+${normalizedItems.length - 1} more item${normalizedItems.length - 1 > 1 ? 's' : ''})`;
+  const totalQtySum = normalizedItems.reduce((s, it) => s + it.requestedQty, 0);
+  const initialStatus = b.saveAsDraft ? 'draft' : 'submitted';
   const refNum = `PR-${Date.now().toString().slice(-6)}`;
 
-  const info = db
-    .prepare(
-      `INSERT INTO purchase_requests (
-        ref_number, project_id, requested_by, task_id, request_date, required_date,
-        item_description, category, quantity, unit, estimated_unit_cost, estimated_total_cost,
-        suggested_supplier, reason, remarks, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      refNum,
-      projectId,
-      req.user!.id,
-      b.taskId ? Number(b.taskId) : null,
-      b.requestDate || new Date().toISOString().slice(0, 10),
-      b.requiredDate,
-      String(b.itemDescription).trim(),
-      b.category || 'Materials',
-      qty,
-      b.unit || 'pcs',
-      unitCost,
-      totalCost,
-      b.suggestedSupplier || '',
-      b.reason || '',
-      b.remarks || '',
-      b.saveAsDraft ? 'draft' : 'submitted'
+  const prId = transaction(() => {
+    const info = db
+      .prepare(
+        `INSERT INTO purchase_requests (
+          ref_number, project_id, requested_by, task_id, request_date, required_date,
+          item_description, category, quantity, unit, estimated_unit_cost, estimated_total_cost,
+          suggested_supplier, preferred_supplier_id, preferred_supplier_name,
+          requesting_department, site_location, item_count, reason, remarks, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        refNum,
+        projectId,
+        req.user!.id,
+        b.taskId ? Number(b.taskId) : null,
+        b.requestDate || new Date().toISOString().slice(0, 10),
+        b.requiredDate,
+        headerSummaryDesc,
+        normalizedItems[0].category || 'Materials',
+        normalizedItems.length === 1 ? normalizedItems[0].requestedQty : totalQtySum,
+        normalizedItems.length === 1 ? normalizedItems[0].unit : 'items',
+        normalizedItems.length === 1 ? normalizedItems[0].estimatedUnitPrice : 0,
+        grandEstimatedTotal,
+        String(b.preferredSupplierName || b.suggestedSupplier || normalizedItems[0].preferredSupplierName || '').trim(),
+        b.preferredSupplierId ? Number(b.preferredSupplierId) : null,
+        String(b.preferredSupplierName || b.suggestedSupplier || '').trim(),
+        String(b.requestingDepartment || 'Construction Operations').trim(),
+        String(b.siteLocation || projectRow.location || '').trim(),
+        normalizedItems.length,
+        String(b.reason || '').trim(),
+        String(b.remarks || '').trim(),
+        initialStatus
+      );
+
+    const newPrId = Number(info.lastInsertRowid);
+    const insItem = db.prepare(
+      `INSERT INTO purchase_request_items (
+        pr_id, catalog_item_id, inventory_item_id, item_code, item_description, specifications,
+        category, requested_qty, approved_qty, unit, estimated_unit_price, estimated_total,
+        preferred_supplier_id, preferred_supplier_name, item_status, remarks, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'pending', ?, ?)`
     );
+    for (const it of normalizedItems) {
+      insItem.run(
+        newPrId,
+        it.catalogItemId,
+        it.inventoryItemId,
+        it.itemCode,
+        it.itemDescription,
+        it.specifications,
+        it.category,
+        it.requestedQty,
+        it.unit,
+        it.estimatedUnitPrice,
+        it.estimatedTotal,
+        it.preferredSupplierId,
+        it.preferredSupplierName,
+        it.remarks,
+        it.sortOrder
+      );
+    }
+
+    if (Array.isArray(b.attachmentsBase64)) {
+      for (const att of b.attachmentsBase64.slice(0, 10)) {
+        if (!att?.dataUrl) continue;
+        saveBase64Attachment({
+          dataUrl: att.dataUrl,
+          fileName: att.fileName || `pr-${refNum}.pdf`,
+          entityType: 'pr_attachment',
+          entityId: newPrId,
+          projectId,
+          category: att.category || 'Specification / Supporting Document',
+          caption: att.caption || '',
+          uploadedBy: req.user!.id,
+        });
+      }
+    }
+
+    return newPrId;
+  });
+
+  if (!b.saveAsDraft) {
+    for (const uid of getUsersWithModuleAction(projectId, 'procurement', 'approve', req.user!.id)) {
+      createNotification({
+        userId: uid,
+        projectId,
+        type: 'pr_awaiting_approval',
+        title: `New Purchase Request Awaiting Approval: ${refNum}`,
+        body: `${normalizedItems.length} item(s) · Est. Total ${grandEstimatedTotal.toLocaleString()} (${headerSummaryDesc})`,
+        linkSection: 'procurement',
+      });
+    }
+  }
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: b.saveAsDraft ? 'CREATE_PR_DRAFT' : 'CREATE_MULTI_ITEM_PR',
+    module: 'procurement',
+    recordType: 'purchase_request',
+    recordRef: refNum,
+    newValue: { itemCount: normalizedItems.length, estimatedTotal: grandEstimatedTotal, status: initialStatus },
+    ipAddress: req.ip || '',
+  });
 
   emitSyncEvent({
     eventType: 'pr:created',
     module: 'procurement',
     projectId,
-    payload: { id: Number(info.lastInsertRowid), refNumber: refNum },
+    payload: { id: prId, refNumber: refNum, itemCount: normalizedItems.length },
   });
 
-  res.status(201).json({ id: Number(info.lastInsertRowid), refNumber: refNum });
+  res.status(201).json({ id: prId, refNumber: refNum, itemCount: normalizedItems.length, estimatedTotalCost: grandEstimatedTotal });
+});
+
+router.put('/purchase-requests/:id', requireModule('procurement'), requirePermission('procurement', 'create'), (req: AuthenticatedRequest, res) => {
+  const prId = Number(req.params.id);
+  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(prId) as any;
+  if (!pr || !canAccessProject(req.user!, pr.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  if (!['draft', 'returned_for_correction', 'submitted'].includes(pr.status)) {
+    res.status(403).json({ error: 'Cannot edit a purchase request once approved or ordered.' });
+    return;
+  }
+
+  const b = req.body || {};
+  const rawItems: any[] = Array.isArray(b.items) ? b.items : [];
+  if (rawItems.length === 0) {
+    res.status(400).json({ error: 'At least one line item is required' });
+    return;
+  }
+
+  let grandTotal = 0;
+  const cleanItems: Array<Record<string, any> & {
+    requestedQty: number;
+    estimatedUnitPrice: number;
+    estimatedTotal: number;
+    sortOrder: number;
+  }> = [];
+  for (let i = 0; i < rawItems.length; i++) {
+    const it = rawItems[i];
+    const reqQty = Number(it.requestedQty ?? it.quantity ?? 0);
+    const estPrice = Number(it.estimatedUnitPrice ?? it.estimatedUnitCost ?? 0);
+    if (!String(it.itemDescription || '').trim() || reqQty <= 0 || estPrice < 0) {
+      res.status(400).json({ error: `Line item ${i + 1}: Valid description, positive quantity, and non-negative price required` });
+      return;
+    }
+    const lineTotal = Number((reqQty * estPrice).toFixed(2));
+    grandTotal += lineTotal;
+    cleanItems.push({ ...it, requestedQty: reqQty, estimatedUnitPrice: estPrice, estimatedTotal: lineTotal, sortOrder: i + 1 });
+  }
+  grandTotal = Number(grandTotal.toFixed(2));
+
+  const nextStatus = b.submitNow ? 'submitted' : b.saveAsDraft ? 'draft' : pr.status === 'returned_for_correction' ? 'submitted' : pr.status;
+  const summaryDesc =
+    cleanItems.length === 1
+      ? cleanItems[0].itemDescription
+      : `${cleanItems[0].itemDescription} (+${cleanItems.length - 1} more item${cleanItems.length - 1 > 1 ? 's' : ''})`;
+
+  transaction(() => {
+    db.prepare(
+      `UPDATE purchase_requests SET
+        required_date = COALESCE(?, required_date),
+        requesting_department = COALESCE(?, requesting_department),
+        site_location = COALESCE(?, site_location),
+        preferred_supplier_id = ?,
+        preferred_supplier_name = COALESCE(?, preferred_supplier_name),
+        suggested_supplier = COALESCE(?, suggested_supplier),
+        item_description = ?,
+        item_count = ?,
+        estimated_total_cost = ?,
+        reason = COALESCE(?, reason),
+        remarks = COALESCE(?, remarks),
+        status = ?,
+        updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(
+      b.requiredDate ?? null,
+      b.requestingDepartment ?? null,
+      b.siteLocation ?? null,
+      b.preferredSupplierId !== undefined ? (b.preferredSupplierId ? Number(b.preferredSupplierId) : null) : pr.preferred_supplier_id,
+      b.preferredSupplierName ?? null,
+      b.preferredSupplierName ?? b.suggestedSupplier ?? null,
+      summaryDesc,
+      cleanItems.length,
+      grandTotal,
+      b.reason ?? null,
+      b.remarks ?? null,
+      nextStatus,
+      prId
+    );
+
+    db.prepare('DELETE FROM purchase_request_items WHERE pr_id = ?').run(prId);
+    const ins = db.prepare(
+      `INSERT INTO purchase_request_items (
+        pr_id, catalog_item_id, inventory_item_id, item_code, item_description, specifications,
+        category, requested_qty, approved_qty, unit, estimated_unit_price, estimated_total,
+        preferred_supplier_id, preferred_supplier_name, item_status, remarks, sort_order
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+    );
+    for (const it of cleanItems) {
+      ins.run(
+        prId,
+        it.catalogItemId ? Number(it.catalogItemId) : null,
+        it.inventoryItemId ? Number(it.inventoryItemId) : null,
+        String(it.itemCode || ''),
+        String(it.itemDescription).trim(),
+        String(it.specifications || ''),
+        String(it.category || 'Materials'),
+        it.requestedQty,
+        String(it.unit || 'pcs'),
+        it.estimatedUnitPrice,
+        it.estimatedTotal,
+        it.preferredSupplierId ? Number(it.preferredSupplierId) : null,
+        String(it.preferredSupplierName || ''),
+        String(it.remarks || ''),
+        it.sortOrder
+      );
+    }
+  });
+
+  res.json({ ok: true, status: nextStatus, estimatedTotalCost: grandTotal });
 });
 
 router.patch('/purchase-requests/:id/workflow', requireModule('procurement'), requirePermission('procurement', 'review'), (req: AuthenticatedRequest, res) => {
   const prId = Number(req.params.id);
-  const { status, stage, remarks } = req.body || {};
+  const { status, stage, remarks, itemDecisions } = req.body || {};
   const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(prId) as any;
   if (!pr) {
     res.status(404).json({ error: 'Purchase request not found' });
@@ -792,49 +1889,183 @@ router.patch('/purchase-requests/:id/workflow', requireModule('procurement'), re
     return;
   }
 
-  const allowed = ['submitted', 'under_review', 'endorsed', 'approved', 'rejected', 'for_procurement', 'ordered', 'cancelled'];
+  const allowed = [
+    'submitted',
+    'under_review',
+    'endorsed',
+    'approved',
+    'partially_approved',
+    'returned_for_correction',
+    'rejected',
+    'for_procurement',
+    'ordered',
+    'cancelled',
+  ];
   if (!allowed.includes(status)) {
     res.status(400).json({ error: 'Invalid status' });
     return;
   }
-  if (status === 'approved' && !hasPermission(req.user!, 'procurement', 'approve')) {
+  if (['approved', 'partially_approved', 'rejected'].includes(status) && !hasPermission(req.user!, 'procurement', 'approve')) {
     res.status(403).json({ error: 'Approval permission required' });
     return;
   }
+  if ((status === 'returned_for_correction' || status === 'rejected') && !String(remarks || '').trim() && !Array.isArray(itemDecisions)) {
+    res.status(400).json({ error: 'Remarks/reason required when rejecting or returning a purchase request' });
+    return;
+  }
+
+  let finalPrStatus = status;
 
   transaction(() => {
-    // Approved PR creates financial commitment without becoming actual expense!
+    const existingItems = db.prepare('SELECT * FROM purchase_request_items WHERE pr_id = ? ORDER BY sort_order ASC, id ASC').all(prId) as any[];
+    let approvedTotal = 0;
+
+    if (Array.isArray(itemDecisions) && itemDecisions.length > 0) {
+      // Partial / per-item approval preserving requested_qty untouched!
+      let approvedItemCount = 0;
+      let rejectedItemCount = 0;
+      let returnedItemCount = 0;
+      for (const dec of itemDecisions) {
+        const item = existingItems.find((x) => x.id === Number(dec.itemId));
+        if (!item) continue;
+        const itemStatus = String(dec.itemStatus || 'approved');
+        let appQty = Number(dec.approvedQty ?? (itemStatus === 'approved' ? item.requested_qty : 0));
+        if (itemStatus === 'rejected' || itemStatus === 'returned') appQty = 0;
+        if (appQty < 0) throw new Error(`Approved quantity cannot be negative for ${item.item_description}`);
+        if (appQty > Number(item.requested_qty)) {
+          throw new Error(`Approved quantity (${appQty}) cannot exceed requested quantity (${item.requested_qty}) for ${item.item_description}`);
+        }
+        const computedItemStatus =
+          itemStatus === 'rejected'
+            ? 'rejected'
+            : itemStatus === 'returned'
+            ? 'returned'
+            : appQty === 0
+            ? 'rejected'
+            : appQty < Number(item.requested_qty)
+            ? 'partially_approved'
+            : 'approved';
+
+        const appTotal = Number((appQty * Number(item.estimated_unit_price)).toFixed(2));
+        approvedTotal += appTotal;
+
+        if (computedItemStatus === 'approved' && appQty === Number(item.requested_qty)) approvedItemCount++;
+        else if (computedItemStatus === 'rejected') rejectedItemCount++;
+        else if (computedItemStatus === 'returned') returnedItemCount++;
+
+        db.prepare(
+          `UPDATE purchase_request_items SET
+            approved_qty = ?,
+            approved_total = ?,
+            item_status = ?,
+            approver_remarks = ?
+           WHERE id = ?`
+        ).run(appQty, appTotal, computedItemStatus, String(dec.remarks || ''), item.id);
+      }
+
+      if (returnedItemCount > 0 && approvedItemCount === 0) finalPrStatus = 'returned_for_correction';
+      else if (rejectedItemCount === existingItems.length) finalPrStatus = 'rejected';
+      else if (approvedItemCount === existingItems.length) finalPrStatus = 'approved';
+      else finalPrStatus = 'partially_approved';
+    } else if (status === 'approved') {
+      for (const item of existingItems) {
+        const appTotal = Number((Number(item.requested_qty) * Number(item.estimated_unit_price)).toFixed(2));
+        approvedTotal += appTotal;
+        db.prepare(
+          `UPDATE purchase_request_items SET
+            approved_qty = requested_qty,
+            approved_total = ?,
+            item_status = 'approved',
+            approver_remarks = CASE WHEN ? != '' THEN ? ELSE approver_remarks END
+           WHERE id = ?`
+        ).run(appTotal, String(remarks || ''), String(remarks || ''), item.id);
+      }
+      if (existingItems.length === 0) approvedTotal = Number(pr.estimated_total_cost || 0);
+    } else if (status === 'rejected' || status === 'cancelled' || status === 'returned_for_correction') {
+      approvedTotal = 0;
+      const mappedItemStatus = status === 'returned_for_correction' ? 'returned' : status;
+      db.prepare('UPDATE purchase_request_items SET approved_qty = 0, approved_total = 0, item_status = ? WHERE pr_id = ?').run(
+        mappedItemStatus,
+        prId
+      );
+    } else {
+      approvedTotal = Number(pr.approved_total_cost || pr.commitment_amount || 0);
+    }
+
+    approvedTotal = Number(approvedTotal.toFixed(2));
+
+    // Approved PR creates financial commitment strictly from APPROVED quantities (never updates warehouse inventory!)
     const commitment =
-      status === 'approved' || status === 'for_procurement' || status === 'ordered'
-        ? Math.max(pr.commitment_amount, pr.estimated_total_cost)
-        : status === 'rejected' || status === 'cancelled'
+      ['approved', 'partially_approved', 'for_procurement', 'ordered'].includes(finalPrStatus)
+        ? approvedTotal > 0 ? approvedTotal : Number(pr.commitment_amount || pr.estimated_total_cost)
+        : ['rejected', 'cancelled', 'returned_for_correction'].includes(finalPrStatus)
         ? 0
-        : pr.commitment_amount;
+        : Number(pr.commitment_amount || 0);
 
     db.prepare(
-      "UPDATE purchase_requests SET status = ?, commitment_amount = ?, updated_at = datetime('now') WHERE id = ?"
-    ).run(status, commitment, prId);
+      `UPDATE purchase_requests SET
+        status = ?,
+        approved_total_cost = ?,
+        commitment_amount = ?,
+        updated_at = datetime('now')
+       WHERE id = ?`
+    ).run(finalPrStatus, approvedTotal, commitment, prId);
 
     db.prepare(
       'INSERT INTO purchase_request_approvals (pr_id, approver_id, stage, decision, remarks) VALUES (?, ?, ?, ?, ?)'
-    ).run(prId, req.user!.id, stage || req.user!.role_name, status, remarks || '');
+    ).run(prId, req.user!.id, stage || req.user!.role_name, finalPrStatus, String(remarks || ''));
 
-    if (status === 'ordered') {
+    if (finalPrStatus === 'ordered') {
       const existingPo = db.prepare('SELECT id FROM purchase_orders WHERE pr_id = ?').get(prId);
       if (!existingPo) {
-        db.prepare(
-          `INSERT INTO purchase_orders (po_number, pr_id, project_id, supplier_name, approved_qty, ordered_qty, actual_unit_cost, actual_total_cost, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`
-        ).run(
-          `PO-${Date.now().toString().slice(-6)}`,
-          prId,
-          pr.project_id,
-          pr.suggested_supplier || 'Designated Supplier',
-          pr.quantity,
-          pr.quantity,
-          pr.estimated_unit_cost,
-          pr.estimated_total_cost
-        );
+        const approvedLines = db
+          .prepare("SELECT * FROM purchase_request_items WHERE pr_id = ? AND approved_qty > 0 AND item_status IN ('approved', 'partially_approved', 'ordered')")
+          .all(prId) as any[];
+        const totalApprovedQty = approvedLines.length > 0 ? approvedLines.reduce((s, l) => s + Number(l.approved_qty), 0) : Number(pr.quantity);
+        const totalOrderCost = approvedLines.length > 0 ? approvedLines.reduce((s, l) => s + Number(l.approved_total), 0) : commitment;
+
+        const poRes = db
+          .prepare(
+            `INSERT INTO purchase_orders (po_number, pr_id, project_id, supplier_id, supplier_name, approved_qty, ordered_qty, actual_unit_cost, actual_total_cost, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`
+          )
+          .run(
+            `PO-${Date.now().toString().slice(-6)}`,
+            prId,
+            pr.project_id,
+            pr.preferred_supplier_id || null,
+            pr.preferred_supplier_name || pr.suggested_supplier || 'Designated Supplier',
+            totalApprovedQty,
+            totalApprovedQty,
+            approvedLines.length === 1 ? approvedLines[0].estimated_unit_price : pr.estimated_unit_cost,
+            totalOrderCost
+          );
+        const poId = Number(poRes.lastInsertRowid);
+        for (const l of approvedLines) {
+          db.prepare(
+            `INSERT INTO purchase_order_items (
+              po_id, pr_id, pr_item_id, catalog_item_id, inventory_item_id, item_code,
+              item_description, unit, approved_qty, ordered_qty, actual_unit_price, actual_total,
+              supplier_id, supplier_name, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`
+          ).run(
+            poId,
+            prId,
+            l.id,
+            l.catalog_item_id,
+            l.inventory_item_id,
+            l.item_code,
+            l.item_description,
+            l.unit,
+            l.approved_qty,
+            l.approved_qty,
+            l.estimated_unit_price,
+            l.approved_total,
+            l.preferred_supplier_id,
+            l.preferred_supplier_name || pr.preferred_supplier_name || pr.suggested_supplier || ''
+          );
+          db.prepare("UPDATE purchase_request_items SET ordered_qty = approved_qty, item_status = 'ordered' WHERE id = ?").run(l.id);
+        }
       }
     }
   });
@@ -843,103 +2074,426 @@ router.patch('/purchase-requests/:id/workflow', requireModule('procurement'), re
     userId: pr.requested_by,
     projectId: pr.project_id,
     type: 'pr_decision',
-    title: `${pr.ref_number} is now ${status}`,
-    body: remarks || `Purchase request moved to ${status}.`,
+    title: `${pr.ref_number}: ${finalPrStatus.replace(/_/g, ' ')}`,
+    body: remarks || `Purchase request moved to ${finalPrStatus.replace(/_/g, ' ')}.`,
     linkSection: 'procurement',
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: `PR_WORKFLOW_${finalPrStatus.toUpperCase()}`,
+    module: 'procurement',
+    recordType: 'purchase_request',
+    recordRef: pr.ref_number,
+    newValue: { status: finalPrStatus, hasItemDecisions: Array.isArray(itemDecisions) },
+    remarks: String(remarks || ''),
+    ipAddress: req.ip || '',
   });
 
   emitSyncEvent({
     eventType: 'pr:updated',
     module: 'procurement',
     projectId: pr.project_id,
-    payload: { id: prId, status },
+    payload: { id: prId, status: finalPrStatus },
   });
 
-  res.json({ ok: true, status });
+  res.json({ ok: true, status: finalPrStatus });
+});
+
+// Create Purchase Order with per-item supplier selection & actual purchase pricing
+router.post('/purchase-requests/:id/create-po', requireModule('procurement'), requirePermission('procurement', 'edit'), (req: AuthenticatedRequest, res) => {
+  const prId = Number(req.params.id);
+  const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(prId) as any;
+  if (!pr || !canAccessProject(req.user!, pr.project_id)) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+  if (!['approved', 'partially_approved', 'for_procurement'].includes(pr.status)) {
+    res.status(400).json({ error: 'Only approved or partially approved purchase requests can generate Purchase Orders' });
+    return;
+  }
+
+  const b = req.body || {};
+  const prItems = db
+    .prepare("SELECT * FROM purchase_request_items WHERE pr_id = ? AND approved_qty > 0 AND item_status IN ('approved', 'partially_approved')")
+    .all(prId) as any[];
+  if (prItems.length === 0) {
+    res.status(400).json({ error: 'No approved line items found to order' });
+    return;
+  }
+
+  const lineInputs: any[] = Array.isArray(b.items) && b.items.length > 0
+    ? b.items
+    : prItems.map((it) => ({
+        prItemId: it.id,
+        orderedQty: it.approved_qty,
+        actualUnitPrice: it.estimated_unit_price,
+        supplierId: b.supplierId || it.preferred_supplier_id || pr.preferred_supplier_id || null,
+        supplierName: b.supplierName || it.preferred_supplier_name || pr.preferred_supplier_name || pr.suggested_supplier || 'Designated Supplier',
+      }));
+
+  const poResult = transaction(() => {
+    let totalOrderedQty = 0;
+    let totalApprovedQty = 0;
+    let totalActualCost = 0;
+    const primarySupplier = String(
+      b.supplierName || lineInputs[0]?.supplierName || pr.preferred_supplier_name || pr.suggested_supplier || 'Designated Supplier'
+    ).trim();
+
+    const poNumber = `PO-${Date.now().toString().slice(-6)}`;
+    const poRes = db
+      .prepare(
+        `INSERT INTO purchase_orders (
+          po_number, pr_id, project_id, supplier_id, supplier_name, approved_qty, ordered_qty,
+          actual_unit_cost, actual_total_cost, remarks, status
+        ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, ?, 'ordered')`
+      )
+      .run(poNumber, prId, pr.project_id, b.supplierId ? Number(b.supplierId) : null, primarySupplier, String(b.remarks || ''), );
+    const poId = Number(poRes.lastInsertRowid);
+
+    for (const inp of lineInputs) {
+      const prItem = prItems.find((x) => x.id === Number(inp.prItemId));
+      if (!prItem) continue;
+      const ordQty = Math.min(Number(prItem.approved_qty), Math.max(0, Number(inp.orderedQty ?? prItem.approved_qty)));
+      if (ordQty <= 0) continue;
+      const unitPrice = Math.max(0, Number(inp.actualUnitPrice ?? prItem.estimated_unit_price));
+      const lineTotal = Number((ordQty * unitPrice).toFixed(2));
+      totalApprovedQty += Number(prItem.approved_qty);
+      totalOrderedQty += ordQty;
+      totalActualCost += lineTotal;
+
+      db.prepare(
+        `INSERT INTO purchase_order_items (
+          po_id, pr_id, pr_item_id, catalog_item_id, inventory_item_id, item_code,
+          item_description, unit, approved_qty, ordered_qty, actual_unit_price, actual_total,
+          supplier_id, supplier_name, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`
+      ).run(
+        poId,
+        prId,
+        prItem.id,
+        prItem.catalog_item_id,
+        prItem.inventory_item_id,
+        prItem.item_code,
+        prItem.item_description,
+        prItem.unit,
+        prItem.approved_qty,
+        ordQty,
+        unitPrice,
+        lineTotal,
+        inp.supplierId ? Number(inp.supplierId) : prItem.preferred_supplier_id,
+        String(inp.supplierName || prItem.preferred_supplier_name || primarySupplier)
+      );
+
+      db.prepare("UPDATE purchase_request_items SET ordered_qty = ordered_qty + ?, item_status = 'ordered' WHERE id = ?").run(ordQty, prItem.id);
+    }
+
+    db.prepare(
+      `UPDATE purchase_orders SET
+        approved_qty = ?,
+        ordered_qty = ?,
+        actual_unit_cost = ?,
+        actual_total_cost = ?
+       WHERE id = ?`
+    ).run(totalApprovedQty, totalOrderedQty, totalOrderedQty > 0 ? Number((totalActualCost / totalOrderedQty).toFixed(2)) : 0, Number(totalActualCost.toFixed(2)), poId);
+
+    db.prepare("UPDATE purchase_requests SET status = 'ordered', updated_at = datetime('now') WHERE id = ?").run(prId);
+
+    return { poId, poNumber, totalActualCost: Number(totalActualCost.toFixed(2)) };
+  });
+
+  createNotification({
+    userId: pr.requested_by,
+    projectId: pr.project_id,
+    type: 'po_issued',
+    title: `Purchase Order Issued: ${poResult.poNumber}`,
+    body: `PO created for ${pr.ref_number} (${poResult.totalActualCost.toLocaleString()}).`,
+    linkSection: 'procurement',
+  });
+
+  logAudit({
+    userId: req.user!.id,
+    userEmail: req.user!.email,
+    action: 'CREATE_PURCHASE_ORDER',
+    module: 'procurement',
+    recordType: 'purchase_order',
+    recordRef: poResult.poNumber,
+    newValue: { prId, prRef: pr.ref_number, totalActualCost: poResult.totalActualCost },
+    ipAddress: req.ip || '',
+  });
+
+  emitSyncEvent({ eventType: 'po:created', module: 'procurement', projectId: pr.project_id, payload: poResult });
+  res.status(201).json({ ok: true, ...poResult });
 });
 
 router.post('/purchase-requests/:id/receive', requireModule('procurement'), requirePermission('procurement', 'edit'), (req: AuthenticatedRequest, res) => {
   const prId = Number(req.params.id);
-  const { deliveredQty, actualUnitCost, recordExpense } = req.body || {};
+  const b = req.body || {};
   const pr = db.prepare('SELECT * FROM purchase_requests WHERE id = ?').get(prId) as any;
   if (!pr || !canAccessProject(req.user!, pr.project_id)) {
     res.status(403).json({ error: 'Access denied' });
     return;
   }
 
-  const qty = Number(deliveredQty || 0);
-  const unitCost = Number(actualUnitCost || pr.estimated_unit_cost);
-  const actualCost = Number((qty * unitCost).toFixed(2));
+  const deliveryDate = String(b.deliveryDate || new Date().toISOString().slice(0, 10));
+  const drNumber = String(b.drNumber || '').trim();
+  const invoiceNumber = String(b.invoiceNumber || '').trim();
 
-  transaction(() => {
-    const po = db.prepare('SELECT * FROM purchase_orders WHERE pr_id = ?').get(prId) as any;
-    const prevDelivered = po ? Number(po.delivered_qty) : 0;
-    const newDelivered = prevDelivered + qty;
-    const fullyDelivered = newDelivered >= pr.quantity;
-    const nextStatus = fullyDelivered ? 'delivered' : 'partially_delivered';
+  try {
+    const receiptSummary = transaction(() => {
+      let po = db.prepare('SELECT * FROM purchase_orders WHERE pr_id = ? ORDER BY id DESC LIMIT 1').get(prId) as any;
+      if (!po) {
+        const poNumber = `PO-${Date.now().toString().slice(-6)}`;
+        const info = db
+          .prepare(
+            `INSERT INTO purchase_orders (po_number, pr_id, project_id, supplier_name, approved_qty, ordered_qty, actual_unit_cost, actual_total_cost, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ordered')`
+          )
+          .run(poNumber, prId, pr.project_id, pr.preferred_supplier_name || pr.suggested_supplier || 'Supplier', pr.quantity, pr.quantity, pr.estimated_unit_cost, pr.approved_total_cost || pr.estimated_total_cost);
+        po = db.prepare('SELECT * FROM purchase_orders WHERE id = ?').get(Number(info.lastInsertRowid));
+      }
 
-    if (po) {
+      const prItems = db.prepare('SELECT * FROM purchase_request_items WHERE pr_id = ? ORDER BY sort_order ASC, id ASC').all(prId) as any[];
+      const lineReceipts: any[] = Array.isArray(b.items) && b.items.length > 0
+        ? b.items
+        : [
+            {
+              prItemId: prItems[0]?.id || null,
+              inventoryItemId: b.inventoryItemId || prItems[0]?.inventory_item_id || null,
+              deliveredQty: b.deliveredQty ?? prItems[0]?.approved_qty ?? pr.quantity,
+              acceptedQty: b.acceptedQty ?? b.deliveredQty ?? prItems[0]?.approved_qty ?? pr.quantity,
+              actualUnitCost: b.actualUnitCost ?? prItems[0]?.estimated_unit_price ?? pr.estimated_unit_cost,
+              discrepancyNotes: b.discrepancyNotes || '',
+              addToWarehouse: b.addToWarehouse !== false,
+            },
+          ];
+
+      let batchDeliveredQty = 0;
+      let batchAcceptedCost = 0;
+      let warehouseUpdatedCount = 0;
+
+      for (const lr of lineReceipts) {
+        const deliveredQty = Math.max(0, Number(lr.deliveredQty || 0));
+        const acceptedQty = Math.min(deliveredQty, Math.max(0, Number(lr.acceptedQty ?? deliveredQty)));
+        const rejectedQty = Number((deliveredQty - acceptedQty).toFixed(3));
+        if (deliveredQty <= 0) continue;
+
+        const prItem = lr.prItemId ? prItems.find((x) => x.id === Number(lr.prItemId)) : null;
+        const unitCost = Math.max(0, Number(lr.actualUnitCost ?? prItem?.estimated_unit_price ?? pr.estimated_unit_cost));
+        const lineActualCost = Number((acceptedQty * unitCost).toFixed(2));
+        let invItemId: number | null = lr.inventoryItemId ? Number(lr.inventoryItemId) : prItem?.inventory_item_id || null;
+
+        // Auto-match by SKU if catalog/item code corresponds to an inventory item
+        if (!invItemId && lr.addToWarehouse !== false && prItem?.item_code) {
+          const matchedInv = db.prepare('SELECT id FROM inventory_items WHERE sku = ?').get(prItem.item_code) as { id: number } | undefined;
+          if (matchedInv) invItemId = matchedInv.id;
+        }
+
+        let addedToWarehouse = 0;
+        // CRITICAL: Warehouse inventory increases ONLY on physically received & accepted deliveries!
+        if (lr.addToWarehouse !== false && acceptedQty > 0 && invItemId) {
+          const invItem = db.prepare('SELECT id FROM inventory_items WHERE id = ?').get(invItemId);
+          if (invItem) {
+            db.prepare("UPDATE inventory_items SET current_qty = current_qty + ?, unit_cost = CASE WHEN ? > 0 THEN ? ELSE unit_cost END, updated_at = datetime('now') WHERE id = ?").run(
+              acceptedQty,
+              unitCost,
+              unitCost,
+              invItemId
+            );
+            db.prepare(
+              `INSERT INTO inventory_transactions (item_id, project_id, tx_type, quantity, unit_cost, reference_doc, notes, performed_by)
+               VALUES (?, ?, 'receive', ?, ?, ?, ?, ?)`
+            ).run(
+              invItemId,
+              pr.project_id,
+              acceptedQty,
+              unitCost,
+              `${po.po_number}${drNumber ? ` / DR:${drNumber}` : ''}`,
+              lr.discrepancyNotes || `Received against ${pr.ref_number}`,
+              req.user!.id
+            );
+            addedToWarehouse = 1;
+            warehouseUpdatedCount++;
+          }
+        }
+
+        db.prepare(
+          `INSERT INTO purchase_order_receipts (
+            po_id, pr_id, pr_item_id, project_id, inventory_item_id, delivered_qty, accepted_qty,
+            rejected_qty, actual_unit_cost, actual_total_cost, delivery_date, dr_number,
+            invoice_number, discrepancy_notes, added_to_warehouse, received_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(
+          po.id,
+          prId,
+          prItem?.id || null,
+          pr.project_id,
+          invItemId,
+          deliveredQty,
+          acceptedQty,
+          rejectedQty,
+          unitCost,
+          lineActualCost,
+          deliveryDate,
+          drNumber,
+          invoiceNumber,
+          String(lr.discrepancyNotes || ''),
+          addedToWarehouse,
+          req.user!.id
+        );
+
+        if (prItem) {
+          const nextItemDel = Number(prItem.delivered_qty || 0) + acceptedQty;
+          const itemDone = nextItemDel >= Number(prItem.approved_qty || prItem.requested_qty);
+          db.prepare(
+            `UPDATE purchase_request_items SET
+              delivered_qty = ?,
+              item_status = ?
+             WHERE id = ?`
+          ).run(nextItemDel, itemDone ? 'delivered' : 'partially_delivered', prItem.id);
+
+          db.prepare(
+            `UPDATE purchase_order_items SET
+              delivered_qty = delivered_qty + ?,
+              actual_unit_price = ?,
+              actual_total = actual_total + ?,
+              discrepancy_qty = discrepancy_qty + ?,
+              discrepancy_notes = COALESCE(NULLIF(?, ''), discrepancy_notes),
+              status = ?
+             WHERE po_id = ? AND pr_item_id = ?`
+          ).run(acceptedQty, unitCost, lineActualCost, rejectedQty, String(lr.discrepancyNotes || ''), itemDone ? 'delivered' : 'partially_delivered', po.id, prItem.id);
+        }
+
+        batchDeliveredQty += acceptedQty;
+        batchAcceptedCost += lineActualCost;
+      }
+
+      if (batchDeliveredQty <= 0) {
+        throw new Error('Delivered quantity must be greater than zero');
+      }
+
+      const refreshedItems = db.prepare("SELECT * FROM purchase_request_items WHERE pr_id = ? AND approved_qty > 0").all(prId) as any[];
+      const allDelivered =
+        refreshedItems.length > 0
+          ? refreshedItems.every((it) => Number(it.delivered_qty) >= Number(it.approved_qty))
+          : Number(po.delivered_qty || 0) + batchDeliveredQty >= Number(pr.quantity);
+      const nextStatus = allDelivered ? 'delivered' : 'partially_delivered';
+
       db.prepare(
         `UPDATE purchase_orders SET
-          delivered_qty = ?,
-          actual_unit_cost = ?,
+          delivered_qty = delivered_qty + ?,
           actual_total_cost = actual_total_cost + ?,
-          delivery_date = date('now'),
+          delivery_date = ?,
           receiving_confirmed_by = ?,
+          discrepancy_notes = COALESCE(NULLIF(?, ''), discrepancy_notes),
           status = ?
          WHERE id = ?`
-      ).run(newDelivered, unitCost, actualCost, req.user!.id, nextStatus, po.id);
-    } else {
-      db.prepare(
-        `INSERT INTO purchase_orders (po_number, pr_id, project_id, supplier_name, approved_qty, ordered_qty, delivered_qty, actual_unit_cost, actual_total_cost, delivery_date, receiving_confirmed_by, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, date('now'), ?, ?)`
-      ).run(
-        `PO-${Date.now().toString().slice(-6)}`,
-        prId,
-        pr.project_id,
-        pr.suggested_supplier || 'Supplier',
-        pr.quantity,
-        pr.quantity,
-        newDelivered,
-        unitCost,
-        actualCost,
-        req.user!.id,
-        nextStatus
-      );
-    }
+      ).run(batchDeliveredQty, Number(batchAcceptedCost.toFixed(2)), deliveryDate, req.user!.id, String(b.discrepancyNotes || ''), nextStatus, po.id);
 
-    db.prepare("UPDATE purchase_requests SET status = ?, updated_at = datetime('now') WHERE id = ?").run(nextStatus, prId);
+      db.prepare("UPDATE purchase_requests SET status = ?, updated_at = datetime('now') WHERE id = ?").run(nextStatus, prId);
 
-    if (recordExpense && actualCost > 0) {
-      db.prepare(
-        `INSERT INTO expenses (ref_number, project_id, expense_date, category, description, amount, supplier_recipient, payment_method, pr_id, submitted_by, approved_by, status, remarks)
-         VALUES (?, ?, date('now'), ?, ?, ?, ?, 'Bank Transfer', ?, ?, ?, 'approved', 'Auto-settled from PO receiving')`
-      ).run(
-        `EXP-${Date.now().toString().slice(-6)}`,
-        pr.project_id,
-        pr.category || 'Materials',
-        `Receiving settlement: ${pr.item_description} (${qty} ${pr.unit})`,
-        actualCost,
-        pr.suggested_supplier || 'Supplier',
-        prId,
-        req.user!.id,
-        req.user!.id
-      );
+      // Attach any delivery receipt / supplier invoice to protected storage
+      const savedDocIds: number[] = [];
+      if (Array.isArray(b.attachmentsBase64)) {
+        for (const att of b.attachmentsBase64.slice(0, 10)) {
+          if (!att?.dataUrl) continue;
+          const saved = saveBase64Attachment({
+            dataUrl: att.dataUrl,
+            fileName: att.fileName || `receiving-${po.po_number}.jpg`,
+            entityType: 'po_receiving',
+            entityId: prId,
+            projectId: pr.project_id,
+            category: att.category || 'Delivery Receipt / Supplier Invoice',
+            caption: `${po.po_number} (${deliveryDate})`,
+            uploadedBy: req.user!.id,
+          });
+          savedDocIds.push(saved.id);
+        }
+      }
 
-      db.prepare(
-        'UPDATE purchase_requests SET settled_amount = MIN(commitment_amount, settled_amount + ?) WHERE id = ?'
-      ).run(actualCost, prId);
-    }
-  });
+      if (b.recordExpense && batchAcceptedCost > 0) {
+        const expRef = `EXP-${Date.now().toString().slice(-6)}`;
+        const expInfo = db
+          .prepare(
+            `INSERT INTO expenses (
+              ref_number, project_id, expense_date, category, description, amount, supplier_recipient,
+              payment_method, pr_id, employee_name, submitted_by, approved_by, approved_at, status,
+              remarks, is_system_settlement
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Bank Transfer', ?, ?, ?, ?, datetime('now'), 'approved', ?, 1)`
+          )
+          .run(
+            expRef,
+            pr.project_id,
+            deliveryDate,
+            pr.category || 'Materials',
+            `Receiving settlement: ${pr.ref_number} (${po.po_number})`,
+            Number(batchAcceptedCost.toFixed(2)),
+            po.supplier_name || pr.preferred_supplier_name || pr.suggested_supplier || 'Supplier',
+            prId,
+            req.user!.full_name,
+            req.user!.id,
+            req.user!.id,
+            `Auto-settled from PO receiving${drNumber ? ` · DR ${drNumber}` : ''}${invoiceNumber ? ` · Inv ${invoiceNumber}` : ''}`
+          );
+        const settlementExpId = Number(expInfo.lastInsertRowid);
+        // Copy any uploaded receiving receipt proof reference onto the expense as well
+        if (Array.isArray(b.attachmentsBase64)) {
+          for (const att of b.attachmentsBase64.slice(0, 5)) {
+            if (!att?.dataUrl) continue;
+            const recAtt = saveBase64Attachment({
+              dataUrl: att.dataUrl,
+              fileName: att.fileName || `po-receipt-${po.po_number}.jpg`,
+              entityType: 'expense_receipt',
+              entityId: settlementExpId,
+              projectId: pr.project_id,
+              category: 'Supplier Invoice / DR',
+              caption: `Settled ${po.po_number}`,
+              uploadedBy: req.user!.id,
+            });
+            db.prepare('UPDATE protected_attachments SET is_locked = 1 WHERE id = ?').run(recAtt.id);
+          }
+        }
 
-  emitSyncEvent({
-    eventType: 'procurement:received',
-    module: 'procurement',
-    projectId: pr.project_id,
-    payload: { prId, deliveredQty: qty },
-  });
+        db.prepare(
+          'UPDATE purchase_requests SET settled_amount = MIN(commitment_amount, settled_amount + ?) WHERE id = ?'
+        ).run(Number(batchAcceptedCost.toFixed(2)), prId);
+      }
 
-  res.json({ ok: true });
+      return { poNumber: po.po_number, nextStatus, batchDeliveredQty, batchAcceptedCost: Number(batchAcceptedCost.toFixed(2)), warehouseUpdatedCount, savedDocIds };
+    });
+
+    createNotification({
+      userId: pr.requested_by,
+      projectId: pr.project_id,
+      type: 'po_received',
+      title: `Delivery Recorded for ${pr.ref_number} (${receiptSummary.nextStatus.replace(/_/g, ' ')})`,
+      body: `Accepted qty: ${receiptSummary.batchDeliveredQty}. Warehouse items updated: ${receiptSummary.warehouseUpdatedCount}.`,
+      linkSection: 'procurement',
+    });
+
+    logAudit({
+      userId: req.user!.id,
+      userEmail: req.user!.email,
+      action: 'RECEIVE_PO_DELIVERY',
+      module: 'procurement',
+      recordType: 'purchase_request',
+      recordRef: pr.ref_number,
+      newValue: receiptSummary,
+      ipAddress: req.ip || '',
+    });
+
+    emitSyncEvent({
+      eventType: 'procurement:received',
+      module: 'procurement',
+      projectId: pr.project_id,
+      payload: { prId, ...receiptSummary },
+    });
+
+    res.json({ ok: true, ...receiptSummary });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to record PO receiving' });
+  }
 });
 
 // --- Personnel & Attendance ---

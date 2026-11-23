@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock } from 'lucide-react';
 import { formatCurrency } from '../lib/api';
 
-export const StatusLabel: React.FC<{ status: string }> = ({ status }) => {
+export const StatusLabel: React.FC<{ status: string; labelOverride?: string }> = ({ status, labelOverride }) => {
   const normalized = (status || '').toLowerCase();
   let colorClass = 'text-slate-600';
   let Icon = Clock;
@@ -26,13 +26,17 @@ export const StatusLabel: React.FC<{ status: string }> = ({ status }) => {
     [
       'at risk',
       'pending',
+      'pending_review',
       'submitted',
+      'resubmitted',
       'under_review',
       'under review',
       'for_review',
       'for review',
       'in_progress',
       'in progress',
+      'partially_approved',
+      'partially approved',
       'partially_delivered',
       'partially delivered',
       'maintenance',
@@ -40,7 +44,9 @@ export const StatusLabel: React.FC<{ status: string }> = ({ status }) => {
       'under_technical_review',
       'under_cost_evaluation',
       'awaiting_management_approval',
+      'awaiting_verification',
       'reinspection',
+      'additional_photos_requested',
     ].includes(normalized)
   ) {
     colorClass = 'text-amber-700';
@@ -56,14 +62,30 @@ export const StatusLabel: React.FC<{ status: string }> = ({ status }) => {
       'cancelled',
       'repair',
       'returned',
+      'for_correction',
       'correction_needed',
+      'returned_for_correction',
     ].includes(normalized)
   ) {
     colorClass = 'text-red-700';
     Icon = AlertCircle;
   }
 
-  const label = status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const labelMap: Record<string, string> = {
+    pending_review: 'Pending Review',
+    for_correction: 'For Correction',
+    correction_needed: 'For Correction',
+    returned_for_correction: 'Returned for Correction',
+    partially_approved: 'Partially Approved',
+    partially_delivered: 'Partially Delivered',
+    for_review: 'For Review',
+    additional_photos_requested: 'More Photos Requested',
+  };
+
+  const label =
+    labelOverride ||
+    labelMap[normalized] ||
+    status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs font-medium whitespace-nowrap ${colorClass}`}>
